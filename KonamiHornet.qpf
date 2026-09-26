@@ -1,0 +1,4 @@
+QUARTUS_VERSION = "17.0"
+# KonamiHornet_stp is the instrumented revision (ISSP probes, OSD debug page); KonamiHornet the release.
+PROJECT_REVISION = "KonamiHornet_stp"
+PROJECT_REVISION = "KonamiHornet"
