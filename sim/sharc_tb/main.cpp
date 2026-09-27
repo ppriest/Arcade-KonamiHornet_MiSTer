@@ -284,6 +284,16 @@ int main(int argc, char **argv) {
             t->dbg_irq_set = irq_now ? irq_mask : 0;
             t->eval();
         }
+        // +pmwatch=<word>: program memory writes to that word, and its value near them
+        if (const char *pw = Verilated::commandArgsPlusMatch("pmwatch=")) {
+            static long watch = -1;
+            if (watch < 0 && *pw) watch = strtol(pw + 9, nullptr, 16);
+            auto *R = t->rootp;
+            if (R->tb_sharc__DOT__dsp__DOT__pm_we_i)
+                if ((long)R->tb_sharc__DOT__dsp__DOT__pm_waddr_i == watch || insns > 77440 && insns < 77470)
+                    fprintf(stderr, "insn %ld: PM write %04X = %012llX\n", insns, R->tb_sharc__DOT__dsp__DOT__pm_waddr_i,
+                            (unsigned long long)R->tb_sharc__DOT__dsp__DOT__pm_wdata_i);
+        }
         t->clk = 1; t->eval();
         phase_clocks[t->rootp->tb_sharc__DOT__dsp__DOT__ph & 15]++;
         cyc++;

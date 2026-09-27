@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Log the PPC's device accesses from power-on, by frame (scripts/mame/bootlog.lua).
 
-    python scripts/mame_bootlog.py gradius4 [--to 800]
+    python scripts/mame_bootlog.py gradius4 [--to 800] [--nodrc]
     -> debug/<set>-bootlog/bootlog.txt
 """
 import argparse
@@ -21,6 +21,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game")
     ap.add_argument("--to", type=int, default=800)
+    ap.add_argument("--nodrc", action="store_true", help="interpreters, as the snapshots run")
     ap.add_argument("--nvram", default=str(REPO / "debug" / "nvram"))
     ap.add_argument("--events", default="")
     a = ap.parse_args()
@@ -36,7 +37,7 @@ def main():
     env = dict(os.environ, CORE_OUT=out.as_posix(), CORE_FRAMES=str(a.to), CORE_EVENTS=a.events,
                CORE_SCRIPT=str(REPO / "scripts" / "mame" / "bootlog.lua"))
     cmd = mame_cmd(exe, a.game, None, mame_dir,
-                   ["-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg"),
+                   (["-nodrc"] if a.nodrc else []) + ["-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg"),
                     "-seconds_to_run", str(a.to // 50 + 60)])
     p = subprocess.run(cmd, cwd=mame_dir, env=env, capture_output=True, text=True, **NO_WINDOW)
     (out / "mame_log.txt").write_text(p.stdout + p.stderr)

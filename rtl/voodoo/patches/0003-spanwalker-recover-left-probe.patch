@@ -1,0 +1,15 @@
+diff --git a/src/voodoo/raster/SpanWalker.scala b/src/voodoo/raster/SpanWalker.scala
+index 59df4ba..61474a8 100644
+--- a/src/voodoo/raster/SpanWalker.scala
++++ b/src/voodoo/raster/SpanWalker.scala
+@@ -256,7 +256,9 @@ case class SpanWalker(c: Config, formalStrong: Boolean = false) extends Componen
+       }
+       when(xPix(probe) <= visibleStartPix) {
+         captureVisibleLeftEdgeFromProbe()
+-        probe := bookmark
++        // bookmark is written this clock: when this probe is the row's first inside pixel, keep
++        // it (probe := bookmark would take the row guess, which may lie outside to the right)
++        when(recoverFoundInside) { probe := bookmark }
+         recoverFoundInside := False
+         state := WalkerState.SearchRightToExit
+       }.otherwise {

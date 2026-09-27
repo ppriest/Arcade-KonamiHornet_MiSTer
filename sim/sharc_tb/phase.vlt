@@ -1,2 +1,6 @@
 `verilator_config
 public_flat_rd -module "sharc_core" -var "ph"
+public_flat_rd -module "sharc_core" -var "pm"
+public_flat_rd -module "sharc_core" -var "pm_we_i"
+public_flat_rd -module "sharc_core" -var "pm_waddr_i"
+public_flat_rd -module "sharc_core" -var "pm_wdata_i"

@@ -616,8 +616,14 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
                 8'h89: o = f_avg(s.r[rx], s.r[ry], trunc);
                 8'h8a: begin o = f_comp(s.r[rx], s.r[ry], s.astat); wr = 1'b0;
                              s.astat = (s.astat & 32'h00FF_FFFF) | (o.r & 32'hFF00_0000); end
-                8'h91: begin o = f_add(s.r[rx], s.r[ry], trunc); o.r = o.r & ~SIGN; end
-                8'h92: begin o = f_sub(s.r[rx], s.r[ry], trunc); o.r = o.r & ~SIGN; end
+                // ABS(Fx + Fy), ABS(Fx - Fy) (compute.hxx:806-884): the flags of the magnitude,
+                // so never AN; a NaN result stays the canonical NaN
+                8'h91: begin o = f_add(s.r[rx], s.r[ry], trunc);
+                             if ((o.astat & AI) == 0) o.r = o.r & ~SIGN;
+                             o.astat = o.astat & ~AN; end
+                8'h92: begin o = f_sub(s.r[rx], s.r[ry], trunc);
+                             if ((o.astat & AI) == 0) o.r = o.r & ~SIGN;
+                             o.astat = o.astat & ~AN; end
                 8'ha1: o = f_pass(s.r[rx]);
                 8'ha2: o = f_neg(s.r[rx]);
                 8'hb0: o = f_abs(s.r[rx]);
@@ -908,7 +914,7 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
     // imm -> ureg (0x0f00)
     9'b00001111?: set_ureg(s, op[39:32], op[31:0]);
     // ureg <-> DM|PM direct (0x1000-0x1300)
-    9'b0001000??: begin
+    9'b000100???: begin
         logic [7:0] u;
         u = op[39:32];
         case (op[41:40])

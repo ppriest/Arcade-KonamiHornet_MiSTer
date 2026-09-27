@@ -314,6 +314,12 @@ int main(int argc, char **argv) {
         ld(5, 7, need(ppc_items, "m_irqstate") & 1);
         ld(7, 0, need(k56, "m_snd_to_host_regs", 0)); ld(7, 1, need(k56, "m_snd_to_host_regs", 1));
         for (int i = 0; i < 4; i++) ld(7, 2 + i, need(k56, "m_host_to_snd_regs", i));
+        {
+            // the 68000 stand-in: running once hornet's SNDRES is set; a command pending if the
+            // sound interrupt is (the tick phase is not saved: HACKS.md)
+            auto drv = load_items(st + "driver.txt");
+            ld(7, 6, (need(drv, "m_sndres") & 1) | ((need(k56, "m_int_pending") & 1) << 1));
+        }
         ld(8, 0, FRAME_LINE | (need(vitems, "m_vblank") ? 1u << 16 : 0));
         for (int i = 0; i < 33; i++) ld(9, i, need(vitems, "m_clut", i) & 0xFFFFFF);
     }
@@ -437,6 +443,13 @@ int main(int argc, char **argv) {
             static FILE *dtr = Verilated::commandArgsPlusMatch("dsptrace")[0]
                                    ? fopen((snap + "/rtl_dsp_pcs.txt").c_str(), "w") : nullptr;
             if (dtr) fprintf(dtr, "%05X\n", (unsigned)t->dsp_dbg_pc);
+            // +dspops: the opcode and PX (sel 20 is not readable; log the op) at chosen PCs
+            if (Verilated::commandArgsPlusMatch("dspops")[0]) {
+                unsigned pc = t->dsp_dbg_pc;
+                if ((pc >= 0x2008C && pc <= 0x20091) || pc == 0x20016 || pc == 0x20017)
+                    fprintf(stderr, "SHARC insn %llu at %05X: %012llX\n", (unsigned long long)dsp_insns, pc,
+                            (unsigned long long)t->dsp_dbg_op);
+            }
         }
         if (t->ev_dsp_reset) fprintf(stderr, "frame %d line %d: the SHARC boots\n", frame + 1, (int)t->vpos);
         if (Verilated::commandArgsPlusMatch("swaplog")[0]) {

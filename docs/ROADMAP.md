@@ -176,5 +176,10 @@ Voodoo files are to be diffed between the two tags before a divergence is blamed
    (HARDWARE_NOTES, Feasibility 3); parked (user decision). Booting: from a frame-140 snapshot
    the PPC starts the SHARC at frame 152 (MAME 151), its EPROM boot runs, and the upload check
    passes (the SHARC's 417 comm writes agree with MAME's, `scripts/mame_commlog.py`); pictures
-   match to frame 159. Next: the rest of the boot (serial port set-up at 222, sound handshake at
-   634, `scripts/mame_bootlog.py`).
+   match to frame 159. From frame 195 the pictures match through 225 (two SHARC decode/flag bugs
+   fixed on the way; the core had crashed on its self-modifying boot code at 218). From 625 they
+   match to 646. With the M48T58 read 4 bytes a word (it had failed the NVRAM check and shown
+   HARDWARE ERROR (0)) and a stand-in for the 68000's handshake (HACKS), the boot reaches attract:
+   "CREDITS 00" from frame 647, where MAME shows it from 683 (its PPC waits on the SHARC in
+   between; cause of the 36 frames unverified). The JVS start-up at 222-458 waits 2 s a try, as in
+   MAME (`scripts/mame_bootlog.py`).

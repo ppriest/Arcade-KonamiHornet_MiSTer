@@ -1,6 +1,6 @@
 // Generator : SpinalHDL v1.13.0    git head : d9d72474863badf47d8585d187f3e04ae4749c59
 // Component : CoreDe10
-// Git hash  : 507f760bf94df119927206c8f4130eef87f3b858
+// Git hash  : 044d99626438cee1ef1c72a17937230f749ba608
 
 `timescale 1ns/1ps
 
@@ -129617,24 +129617,24 @@ module SpanWalker (
   wire       [45:0]   _zz_when_AFix_l771_69_2;
   wire       [45:0]   _zz_probe_hiAlpha_11;
   wire       [45:0]   _zz_probe_hiAlpha_12;
-  wire       [11:0]   _zz_when_SpanWalker_l271;
-  wire       [11:0]   _zz_when_SpanWalker_l271_1;
-  wire       [15:0]   _zz_when_SpanWalker_l271_2;
-  wire       [33:0]   _zz_when_SpanWalker_l281;
-  wire       [9:0]    _zz_when_SpanWalker_l281_1;
-  wire       [9:0]    _zz_when_SpanWalker_l281_2;
-  wire       [33:0]   _zz_when_SpanWalker_l281_3;
-  wire       [33:0]   _zz_when_SpanWalker_l281_4;
-  wire       [9:0]    _zz_when_SpanWalker_l281_5;
-  wire       [9:0]    _zz_when_SpanWalker_l281_6;
-  wire       [33:0]   _zz_when_SpanWalker_l281_7;
-  wire       [33:0]   _zz_when_SpanWalker_l281_8;
-  wire       [9:0]    _zz_when_SpanWalker_l281_9;
-  wire       [9:0]    _zz_when_SpanWalker_l281_10;
-  wire       [33:0]   _zz_when_SpanWalker_l281_11;
-  wire       [11:0]   _zz_when_SpanWalker_l281_12;
-  wire       [11:0]   _zz_when_SpanWalker_l281_13;
-  wire       [15:0]   _zz_when_SpanWalker_l281_14;
+  wire       [11:0]   _zz_when_SpanWalker_l273;
+  wire       [11:0]   _zz_when_SpanWalker_l273_1;
+  wire       [15:0]   _zz_when_SpanWalker_l273_2;
+  wire       [33:0]   _zz_when_SpanWalker_l283;
+  wire       [9:0]    _zz_when_SpanWalker_l283_1;
+  wire       [9:0]    _zz_when_SpanWalker_l283_2;
+  wire       [33:0]   _zz_when_SpanWalker_l283_3;
+  wire       [33:0]   _zz_when_SpanWalker_l283_4;
+  wire       [9:0]    _zz_when_SpanWalker_l283_5;
+  wire       [9:0]    _zz_when_SpanWalker_l283_6;
+  wire       [33:0]   _zz_when_SpanWalker_l283_7;
+  wire       [33:0]   _zz_when_SpanWalker_l283_8;
+  wire       [9:0]    _zz_when_SpanWalker_l283_9;
+  wire       [9:0]    _zz_when_SpanWalker_l283_10;
+  wire       [33:0]   _zz_when_SpanWalker_l283_11;
+  wire       [11:0]   _zz_when_SpanWalker_l283_12;
+  wire       [11:0]   _zz_when_SpanWalker_l283_13;
+  wire       [15:0]   _zz_when_SpanWalker_l283_14;
   wire       [15:0]   _zz_leftEdge_coords_0_9;
   wire       [15:0]   _zz_leftEdge_coords_1_3;
   wire       [23:0]   _zz_leftEdge_linear_red_9;
@@ -129900,24 +129900,24 @@ module SpanWalker (
   wire       [45:0]   _zz_when_AFix_l771_82_2;
   wire       [45:0]   _zz_probe_hiAlpha_13;
   wire       [45:0]   _zz_probe_hiAlpha_14;
-  wire       [11:0]   _zz_when_SpanWalker_l285;
-  wire       [11:0]   _zz_when_SpanWalker_l285_1;
-  wire       [15:0]   _zz_when_SpanWalker_l285_2;
-  wire       [33:0]   _zz_when_SpanWalker_l297;
-  wire       [9:0]    _zz_when_SpanWalker_l297_1;
-  wire       [9:0]    _zz_when_SpanWalker_l297_2;
-  wire       [33:0]   _zz_when_SpanWalker_l297_3;
-  wire       [33:0]   _zz_when_SpanWalker_l297_4;
-  wire       [9:0]    _zz_when_SpanWalker_l297_5;
-  wire       [9:0]    _zz_when_SpanWalker_l297_6;
-  wire       [33:0]   _zz_when_SpanWalker_l297_7;
-  wire       [33:0]   _zz_when_SpanWalker_l297_8;
-  wire       [9:0]    _zz_when_SpanWalker_l297_9;
-  wire       [9:0]    _zz_when_SpanWalker_l297_10;
-  wire       [33:0]   _zz_when_SpanWalker_l297_11;
-  wire       [11:0]   _zz_when_SpanWalker_l298;
-  wire       [11:0]   _zz_when_SpanWalker_l298_1;
-  wire       [15:0]   _zz_when_SpanWalker_l298_2;
+  wire       [11:0]   _zz_when_SpanWalker_l287;
+  wire       [11:0]   _zz_when_SpanWalker_l287_1;
+  wire       [15:0]   _zz_when_SpanWalker_l287_2;
+  wire       [33:0]   _zz_when_SpanWalker_l299;
+  wire       [9:0]    _zz_when_SpanWalker_l299_1;
+  wire       [9:0]    _zz_when_SpanWalker_l299_2;
+  wire       [33:0]   _zz_when_SpanWalker_l299_3;
+  wire       [33:0]   _zz_when_SpanWalker_l299_4;
+  wire       [9:0]    _zz_when_SpanWalker_l299_5;
+  wire       [9:0]    _zz_when_SpanWalker_l299_6;
+  wire       [33:0]   _zz_when_SpanWalker_l299_7;
+  wire       [33:0]   _zz_when_SpanWalker_l299_8;
+  wire       [9:0]    _zz_when_SpanWalker_l299_9;
+  wire       [9:0]    _zz_when_SpanWalker_l299_10;
+  wire       [33:0]   _zz_when_SpanWalker_l299_11;
+  wire       [11:0]   _zz_when_SpanWalker_l300;
+  wire       [11:0]   _zz_when_SpanWalker_l300_1;
+  wire       [15:0]   _zz_when_SpanWalker_l300_2;
   wire       [11:0]   _zz_when_SpanWalker_l207_1_1;
   wire       [11:0]   _zz_when_SpanWalker_l207_1_2;
   wire       [15:0]   _zz_when_SpanWalker_l207_1_3;
@@ -130725,21 +130725,21 @@ module SpanWalker (
   wire       [33:0]   _zz_probe_edge_0_18;
   wire       [33:0]   _zz_probe_edge_1_18;
   wire       [33:0]   _zz_probe_edge_2_18;
-  wire       [33:0]   _zz_when_SpanWalker_l313;
-  wire       [9:0]    _zz_when_SpanWalker_l313_1;
-  wire       [9:0]    _zz_when_SpanWalker_l313_2;
-  wire       [33:0]   _zz_when_SpanWalker_l313_3;
-  wire       [33:0]   _zz_when_SpanWalker_l313_4;
-  wire       [9:0]    _zz_when_SpanWalker_l313_5;
-  wire       [9:0]    _zz_when_SpanWalker_l313_6;
-  wire       [33:0]   _zz_when_SpanWalker_l313_7;
-  wire       [33:0]   _zz_when_SpanWalker_l313_8;
-  wire       [9:0]    _zz_when_SpanWalker_l313_9;
-  wire       [9:0]    _zz_when_SpanWalker_l313_10;
-  wire       [33:0]   _zz_when_SpanWalker_l313_11;
-  wire       [11:0]   _zz_when_SpanWalker_l314;
-  wire       [11:0]   _zz_when_SpanWalker_l314_1;
-  wire       [15:0]   _zz_when_SpanWalker_l314_2;
+  wire       [33:0]   _zz_when_SpanWalker_l315;
+  wire       [9:0]    _zz_when_SpanWalker_l315_1;
+  wire       [9:0]    _zz_when_SpanWalker_l315_2;
+  wire       [33:0]   _zz_when_SpanWalker_l315_3;
+  wire       [33:0]   _zz_when_SpanWalker_l315_4;
+  wire       [9:0]    _zz_when_SpanWalker_l315_5;
+  wire       [9:0]    _zz_when_SpanWalker_l315_6;
+  wire       [33:0]   _zz_when_SpanWalker_l315_7;
+  wire       [33:0]   _zz_when_SpanWalker_l315_8;
+  wire       [9:0]    _zz_when_SpanWalker_l315_9;
+  wire       [9:0]    _zz_when_SpanWalker_l315_10;
+  wire       [33:0]   _zz_when_SpanWalker_l315_11;
+  wire       [11:0]   _zz_when_SpanWalker_l316;
+  wire       [11:0]   _zz_when_SpanWalker_l316_1;
+  wire       [15:0]   _zz_when_SpanWalker_l316_2;
   wire       [15:0]   _zz_emitRight_1;
   wire       [11:0]   _zz_emitRight_2;
   wire       [16:0]   _zz__zz_when_AFix_l766_266;
@@ -131004,14 +131004,14 @@ module SpanWalker (
   wire       [16:0]   _zz_when_AFix_l766_145_1;
   wire       [15:0]   _zz_when_AFix_l766_145_2;
   wire       [16:0]   _zz_when_AFix_l766_145_3;
-  wire       [15:0]   _zz__zz_when_SpanWalker_l343;
-  wire       [16:0]   _zz__zz_when_SpanWalker_l343_1;
+  wire       [15:0]   _zz__zz_when_SpanWalker_l345;
+  wire       [16:0]   _zz__zz_when_SpanWalker_l345_1;
   wire       [16:0]   _zz_when_AFix_l771_145;
   wire       [16:0]   _zz_when_AFix_l771_145_1;
   wire       [15:0]   _zz_when_AFix_l771_145_2;
-  wire       [15:0]   _zz_when_SpanWalker_l343_1;
-  wire       [15:0]   _zz_when_SpanWalker_l343_2;
-  wire       [15:0]   _zz_when_SpanWalker_l343_3;
+  wire       [15:0]   _zz_when_SpanWalker_l345_1;
+  wire       [15:0]   _zz_when_SpanWalker_l345_2;
+  wire       [15:0]   _zz_when_SpanWalker_l345_3;
   wire       [15:0]   _zz__zz_rowGuess_coords_0;
   wire       [16:0]   _zz__zz_when_AFix_l766_281;
   wire       [16:0]   _zz__zz_when_AFix_l766_281_1;
@@ -132210,9 +132210,9 @@ module SpanWalker (
   reg        [45:0]   _zz_probe_hiAlpha_1;
   wire                when_AFix_l766_69;
   wire                when_AFix_l771_69;
-  wire                when_SpanWalker_l271;
-  wire                when_SpanWalker_l280;
-  wire                when_SpanWalker_l281;
+  wire                when_SpanWalker_l273;
+  wire                when_SpanWalker_l282;
+  wire                when_SpanWalker_l283;
   wire       [16:0]   _zz_when_AFix_l766_160;
   reg        [15:0]   _zz_probe_coords_0_2;
   wire                when_AFix_l766_70;
@@ -132265,10 +132265,10 @@ module SpanWalker (
   reg        [45:0]   _zz_probe_hiAlpha_2;
   wire                when_AFix_l766_82;
   wire                when_AFix_l771_82;
-  wire                when_SpanWalker_l285;
-  wire                when_SpanWalker_l296;
-  wire                when_SpanWalker_l297;
+  wire                when_SpanWalker_l287;
   wire                when_SpanWalker_l298;
+  wire                when_SpanWalker_l299;
+  wire                when_SpanWalker_l300;
   wire                when_SpanWalker_l207_1;
   wire       [16:0]   _zz_when_AFix_l766_173;
   reg        [15:0]   _zz_leftEdge_coords_0_2;
@@ -132498,9 +132498,9 @@ module SpanWalker (
   reg        [45:0]   _zz_leftEdge_hiAlpha_3;
   wire                when_AFix_l766_130;
   wire                when_AFix_l771_130;
-  wire                when_SpanWalker_l312;
-  wire                when_SpanWalker_l313;
   wire                when_SpanWalker_l314;
+  wire                when_SpanWalker_l315;
+  wire                when_SpanWalker_l316;
   wire       [16:0]   _zz_when_AFix_l766_266;
   reg        [15:0]   _zz_probe_coords_0_4;
   wire                when_AFix_l766_131;
@@ -132557,14 +132557,14 @@ module SpanWalker (
   reg        [15:0]   _zz_emitRight;
   wire                when_AFix_l766_144;
   wire                when_AFix_l771_144;
-  wire                when_SpanWalker_l328;
-  wire                when_SpanWalker_l336;
-  wire                when_SpanWalker_l341;
+  wire                when_SpanWalker_l330;
+  wire                when_SpanWalker_l338;
+  wire                when_SpanWalker_l343;
   wire       [16:0]   _zz_when_AFix_l766_280;
-  reg        [15:0]   _zz_when_SpanWalker_l343;
+  reg        [15:0]   _zz_when_SpanWalker_l345;
   wire                when_AFix_l766_145;
   wire                when_AFix_l771_145;
-  wire                when_SpanWalker_l343;
+  wire                when_SpanWalker_l345;
   wire       [15:0]   _zz_rowGuess_coords_0;
   wire       [15:0]   _zz_rowGuess_coords_1;
   wire       [23:0]   _zz_rowGuess_linear_red;
@@ -134152,24 +134152,24 @@ module SpanWalker (
   assign _zz_when_AFix_l771_69_1 = {{1{_zz_when_AFix_l771_69_2[45]}}, _zz_when_AFix_l771_69_2};
   assign _zz_probe_hiAlpha_11 = _zz_probe_hiAlpha_12;
   assign _zz_probe_hiAlpha_12 = _zz_probe_hiAlpha_1;
-  assign _zz_when_SpanWalker_l271 = _zz_when_SpanWalker_l271_1;
-  assign _zz_when_SpanWalker_l271_1 = (_zz_when_SpanWalker_l271_2 >>> 3'd4);
-  assign _zz_when_SpanWalker_l271_2 = probe_coords_0;
-  assign _zz_when_SpanWalker_l281_1 = _zz_when_SpanWalker_l281_2;
-  assign _zz_when_SpanWalker_l281 = {{24{_zz_when_SpanWalker_l281_1[9]}}, _zz_when_SpanWalker_l281_1};
-  assign _zz_when_SpanWalker_l281_2 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l281_3 = probe_edge_0;
-  assign _zz_when_SpanWalker_l281_5 = _zz_when_SpanWalker_l281_6;
-  assign _zz_when_SpanWalker_l281_4 = {{24{_zz_when_SpanWalker_l281_5[9]}}, _zz_when_SpanWalker_l281_5};
-  assign _zz_when_SpanWalker_l281_6 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l281_7 = probe_edge_1;
-  assign _zz_when_SpanWalker_l281_9 = _zz_when_SpanWalker_l281_10;
-  assign _zz_when_SpanWalker_l281_8 = {{24{_zz_when_SpanWalker_l281_9[9]}}, _zz_when_SpanWalker_l281_9};
-  assign _zz_when_SpanWalker_l281_10 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l281_11 = probe_edge_2;
-  assign _zz_when_SpanWalker_l281_12 = _zz_when_SpanWalker_l281_13;
-  assign _zz_when_SpanWalker_l281_13 = (_zz_when_SpanWalker_l281_14 >>> 3'd4);
-  assign _zz_when_SpanWalker_l281_14 = probe_coords_0;
+  assign _zz_when_SpanWalker_l273 = _zz_when_SpanWalker_l273_1;
+  assign _zz_when_SpanWalker_l273_1 = (_zz_when_SpanWalker_l273_2 >>> 3'd4);
+  assign _zz_when_SpanWalker_l273_2 = probe_coords_0;
+  assign _zz_when_SpanWalker_l283_1 = _zz_when_SpanWalker_l283_2;
+  assign _zz_when_SpanWalker_l283 = {{24{_zz_when_SpanWalker_l283_1[9]}}, _zz_when_SpanWalker_l283_1};
+  assign _zz_when_SpanWalker_l283_2 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l283_3 = probe_edge_0;
+  assign _zz_when_SpanWalker_l283_5 = _zz_when_SpanWalker_l283_6;
+  assign _zz_when_SpanWalker_l283_4 = {{24{_zz_when_SpanWalker_l283_5[9]}}, _zz_when_SpanWalker_l283_5};
+  assign _zz_when_SpanWalker_l283_6 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l283_7 = probe_edge_1;
+  assign _zz_when_SpanWalker_l283_9 = _zz_when_SpanWalker_l283_10;
+  assign _zz_when_SpanWalker_l283_8 = {{24{_zz_when_SpanWalker_l283_9[9]}}, _zz_when_SpanWalker_l283_9};
+  assign _zz_when_SpanWalker_l283_10 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l283_11 = probe_edge_2;
+  assign _zz_when_SpanWalker_l283_12 = _zz_when_SpanWalker_l283_13;
+  assign _zz_when_SpanWalker_l283_13 = (_zz_when_SpanWalker_l283_14 >>> 3'd4);
+  assign _zz_when_SpanWalker_l283_14 = probe_coords_0;
   assign _zz_leftEdge_coords_0_9 = probe_coords_0;
   assign _zz_leftEdge_coords_1_3 = probe_coords_1;
   assign _zz_leftEdge_linear_red_9 = probe_linear_red;
@@ -134435,24 +134435,24 @@ module SpanWalker (
   assign _zz_when_AFix_l771_82_1 = {{1{_zz_when_AFix_l771_82_2[45]}}, _zz_when_AFix_l771_82_2};
   assign _zz_probe_hiAlpha_13 = _zz_probe_hiAlpha_14;
   assign _zz_probe_hiAlpha_14 = _zz_probe_hiAlpha_2;
-  assign _zz_when_SpanWalker_l285 = _zz_when_SpanWalker_l285_1;
-  assign _zz_when_SpanWalker_l285_1 = (_zz_when_SpanWalker_l285_2 >>> 3'd4);
-  assign _zz_when_SpanWalker_l285_2 = probe_coords_0;
-  assign _zz_when_SpanWalker_l297_1 = _zz_when_SpanWalker_l297_2;
-  assign _zz_when_SpanWalker_l297 = {{24{_zz_when_SpanWalker_l297_1[9]}}, _zz_when_SpanWalker_l297_1};
-  assign _zz_when_SpanWalker_l297_2 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l297_3 = probe_edge_0;
-  assign _zz_when_SpanWalker_l297_5 = _zz_when_SpanWalker_l297_6;
-  assign _zz_when_SpanWalker_l297_4 = {{24{_zz_when_SpanWalker_l297_5[9]}}, _zz_when_SpanWalker_l297_5};
-  assign _zz_when_SpanWalker_l297_6 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l297_7 = probe_edge_1;
-  assign _zz_when_SpanWalker_l297_9 = _zz_when_SpanWalker_l297_10;
-  assign _zz_when_SpanWalker_l297_8 = {{24{_zz_when_SpanWalker_l297_9[9]}}, _zz_when_SpanWalker_l297_9};
-  assign _zz_when_SpanWalker_l297_10 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l297_11 = probe_edge_2;
-  assign _zz_when_SpanWalker_l298 = _zz_when_SpanWalker_l298_1;
-  assign _zz_when_SpanWalker_l298_1 = (_zz_when_SpanWalker_l298_2 >>> 3'd4);
-  assign _zz_when_SpanWalker_l298_2 = probe_coords_0;
+  assign _zz_when_SpanWalker_l287 = _zz_when_SpanWalker_l287_1;
+  assign _zz_when_SpanWalker_l287_1 = (_zz_when_SpanWalker_l287_2 >>> 3'd4);
+  assign _zz_when_SpanWalker_l287_2 = probe_coords_0;
+  assign _zz_when_SpanWalker_l299_1 = _zz_when_SpanWalker_l299_2;
+  assign _zz_when_SpanWalker_l299 = {{24{_zz_when_SpanWalker_l299_1[9]}}, _zz_when_SpanWalker_l299_1};
+  assign _zz_when_SpanWalker_l299_2 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l299_3 = probe_edge_0;
+  assign _zz_when_SpanWalker_l299_5 = _zz_when_SpanWalker_l299_6;
+  assign _zz_when_SpanWalker_l299_4 = {{24{_zz_when_SpanWalker_l299_5[9]}}, _zz_when_SpanWalker_l299_5};
+  assign _zz_when_SpanWalker_l299_6 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l299_7 = probe_edge_1;
+  assign _zz_when_SpanWalker_l299_9 = _zz_when_SpanWalker_l299_10;
+  assign _zz_when_SpanWalker_l299_8 = {{24{_zz_when_SpanWalker_l299_9[9]}}, _zz_when_SpanWalker_l299_9};
+  assign _zz_when_SpanWalker_l299_10 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l299_11 = probe_edge_2;
+  assign _zz_when_SpanWalker_l300 = _zz_when_SpanWalker_l300_1;
+  assign _zz_when_SpanWalker_l300_1 = (_zz_when_SpanWalker_l300_2 >>> 3'd4);
+  assign _zz_when_SpanWalker_l300_2 = probe_coords_0;
   assign _zz_when_SpanWalker_l207_1_1 = _zz_when_SpanWalker_l207_1_2;
   assign _zz_when_SpanWalker_l207_1_2 = (_zz_when_SpanWalker_l207_1_3 >>> 3'd4);
   assign _zz_when_SpanWalker_l207_1_3 = probe_coords_0;
@@ -135260,21 +135260,21 @@ module SpanWalker (
   assign _zz_probe_edge_0_18 = bookmark_edge_0;
   assign _zz_probe_edge_1_18 = bookmark_edge_1;
   assign _zz_probe_edge_2_18 = bookmark_edge_2;
-  assign _zz_when_SpanWalker_l313_1 = _zz_when_SpanWalker_l313_2;
-  assign _zz_when_SpanWalker_l313 = {{24{_zz_when_SpanWalker_l313_1[9]}}, _zz_when_SpanWalker_l313_1};
-  assign _zz_when_SpanWalker_l313_2 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l313_3 = probe_edge_0;
-  assign _zz_when_SpanWalker_l313_5 = _zz_when_SpanWalker_l313_6;
-  assign _zz_when_SpanWalker_l313_4 = {{24{_zz_when_SpanWalker_l313_5[9]}}, _zz_when_SpanWalker_l313_5};
-  assign _zz_when_SpanWalker_l313_6 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l313_7 = probe_edge_1;
-  assign _zz_when_SpanWalker_l313_9 = _zz_when_SpanWalker_l313_10;
-  assign _zz_when_SpanWalker_l313_8 = {{24{_zz_when_SpanWalker_l313_9[9]}}, _zz_when_SpanWalker_l313_9};
-  assign _zz_when_SpanWalker_l313_10 = ({8'd0,zero} <<< 4'd8);
-  assign _zz_when_SpanWalker_l313_11 = probe_edge_2;
-  assign _zz_when_SpanWalker_l314 = _zz_when_SpanWalker_l314_1;
-  assign _zz_when_SpanWalker_l314_1 = (_zz_when_SpanWalker_l314_2 >>> 3'd4);
-  assign _zz_when_SpanWalker_l314_2 = probe_coords_0;
+  assign _zz_when_SpanWalker_l315_1 = _zz_when_SpanWalker_l315_2;
+  assign _zz_when_SpanWalker_l315 = {{24{_zz_when_SpanWalker_l315_1[9]}}, _zz_when_SpanWalker_l315_1};
+  assign _zz_when_SpanWalker_l315_2 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l315_3 = probe_edge_0;
+  assign _zz_when_SpanWalker_l315_5 = _zz_when_SpanWalker_l315_6;
+  assign _zz_when_SpanWalker_l315_4 = {{24{_zz_when_SpanWalker_l315_5[9]}}, _zz_when_SpanWalker_l315_5};
+  assign _zz_when_SpanWalker_l315_6 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l315_7 = probe_edge_1;
+  assign _zz_when_SpanWalker_l315_9 = _zz_when_SpanWalker_l315_10;
+  assign _zz_when_SpanWalker_l315_8 = {{24{_zz_when_SpanWalker_l315_9[9]}}, _zz_when_SpanWalker_l315_9};
+  assign _zz_when_SpanWalker_l315_10 = ({8'd0,zero} <<< 4'd8);
+  assign _zz_when_SpanWalker_l315_11 = probe_edge_2;
+  assign _zz_when_SpanWalker_l316 = _zz_when_SpanWalker_l316_1;
+  assign _zz_when_SpanWalker_l316_1 = (_zz_when_SpanWalker_l316_2 >>> 3'd4);
+  assign _zz_when_SpanWalker_l316_2 = probe_coords_0;
   assign _zz_emitRight_1 = {_zz_emitRight_2,vertexFracZeros};
   assign _zz_emitRight_2 = ($signed(visibleEndPix) - $signed(12'h001));
   assign _zz__zz_when_AFix_l766_266 = _zz__zz_when_AFix_l766_266_1;
@@ -135539,14 +135539,14 @@ module SpanWalker (
   assign _zz_when_AFix_l766_145_2 = {1'b0,15'h7fff};
   assign _zz_when_AFix_l766_145_1 = {{1{_zz_when_AFix_l766_145_2[15]}}, _zz_when_AFix_l766_145_2};
   assign _zz_when_AFix_l766_145_3 = _zz_when_AFix_l766_280;
-  assign _zz__zz_when_SpanWalker_l343_1 = _zz_when_AFix_l766_280;
-  assign _zz__zz_when_SpanWalker_l343 = _zz__zz_when_SpanWalker_l343_1[15:0];
+  assign _zz__zz_when_SpanWalker_l345_1 = _zz_when_AFix_l766_280;
+  assign _zz__zz_when_SpanWalker_l345 = _zz__zz_when_SpanWalker_l345_1[15:0];
   assign _zz_when_AFix_l771_145 = _zz_when_AFix_l766_280;
   assign _zz_when_AFix_l771_145_2 = 16'h8000;
   assign _zz_when_AFix_l771_145_1 = {{1{_zz_when_AFix_l771_145_2[15]}}, _zz_when_AFix_l771_145_2};
-  assign _zz_when_SpanWalker_l343_1 = triangleConst_yrange_1;
-  assign _zz_when_SpanWalker_l343_2 = _zz_when_SpanWalker_l343_3;
-  assign _zz_when_SpanWalker_l343_3 = _zz_when_SpanWalker_l343;
+  assign _zz_when_SpanWalker_l345_1 = triangleConst_yrange_1;
+  assign _zz_when_SpanWalker_l345_2 = _zz_when_SpanWalker_l345_3;
+  assign _zz_when_SpanWalker_l345_3 = _zz_when_SpanWalker_l345;
   assign _zz__zz_rowGuess_coords_0 = nextRowBase_coords_0;
   assign _zz__zz_when_AFix_l766_281 = _zz__zz_when_AFix_l766_281_1;
   assign _zz__zz_when_AFix_l766_281_1 = ($signed(_zz__zz_when_AFix_l766_281_2) + $signed(_zz__zz_when_AFix_l766_281_4));
@@ -137728,9 +137728,9 @@ module SpanWalker (
   end
 
   assign when_AFix_l771_69 = ($signed(_zz_when_AFix_l771_69) < $signed(_zz_when_AFix_l771_69_1));
-  assign when_SpanWalker_l271 = ($signed(_zz_when_SpanWalker_l271) <= $signed(visibleStartPix));
-  assign when_SpanWalker_l280 = (state_1 == WalkerState_SearchRightToEnter);
-  assign when_SpanWalker_l281 = (((($signed(_zz_when_SpanWalker_l281) <= $signed(_zz_when_SpanWalker_l281_3)) && ($signed(_zz_when_SpanWalker_l281_4) <= $signed(_zz_when_SpanWalker_l281_7))) && ($signed(_zz_when_SpanWalker_l281_8) <= $signed(_zz_when_SpanWalker_l281_11))) && ($signed(visibleStartPix) <= $signed(_zz_when_SpanWalker_l281_12)));
+  assign when_SpanWalker_l273 = ($signed(_zz_when_SpanWalker_l273) <= $signed(visibleStartPix));
+  assign when_SpanWalker_l282 = (state_1 == WalkerState_SearchRightToEnter);
+  assign when_SpanWalker_l283 = (((($signed(_zz_when_SpanWalker_l283) <= $signed(_zz_when_SpanWalker_l283_3)) && ($signed(_zz_when_SpanWalker_l283_4) <= $signed(_zz_when_SpanWalker_l283_7))) && ($signed(_zz_when_SpanWalker_l283_8) <= $signed(_zz_when_SpanWalker_l283_11))) && ($signed(visibleStartPix) <= $signed(_zz_when_SpanWalker_l283_12)));
   assign _zz_when_AFix_l766_160 = _zz__zz_when_AFix_l766_160;
   assign when_AFix_l766_70 = ($signed(_zz_when_AFix_l766_70_1) < $signed(_zz_when_AFix_l766_70_3));
   always @(*) begin
@@ -137926,10 +137926,10 @@ module SpanWalker (
   end
 
   assign when_AFix_l771_82 = ($signed(_zz_when_AFix_l771_82) < $signed(_zz_when_AFix_l771_82_1));
-  assign when_SpanWalker_l285 = ($signed(visibleEndPix) <= $signed(_zz_when_SpanWalker_l285));
-  assign when_SpanWalker_l296 = (state_1 == WalkerState_SearchLeftToExit);
-  assign when_SpanWalker_l297 = ((($signed(_zz_when_SpanWalker_l297) <= $signed(_zz_when_SpanWalker_l297_3)) && ($signed(_zz_when_SpanWalker_l297_4) <= $signed(_zz_when_SpanWalker_l297_7))) && ($signed(_zz_when_SpanWalker_l297_8) <= $signed(_zz_when_SpanWalker_l297_11)));
-  assign when_SpanWalker_l298 = ($signed(_zz_when_SpanWalker_l298) <= $signed(visibleStartPix));
+  assign when_SpanWalker_l287 = ($signed(visibleEndPix) <= $signed(_zz_when_SpanWalker_l287));
+  assign when_SpanWalker_l298 = (state_1 == WalkerState_SearchLeftToExit);
+  assign when_SpanWalker_l299 = ((($signed(_zz_when_SpanWalker_l299) <= $signed(_zz_when_SpanWalker_l299_3)) && ($signed(_zz_when_SpanWalker_l299_4) <= $signed(_zz_when_SpanWalker_l299_7))) && ($signed(_zz_when_SpanWalker_l299_8) <= $signed(_zz_when_SpanWalker_l299_11)));
+  assign when_SpanWalker_l300 = ($signed(_zz_when_SpanWalker_l300) <= $signed(visibleStartPix));
   assign when_SpanWalker_l207_1 = ($signed(_zz_when_SpanWalker_l207_1_1) < $signed(visibleStartPix));
   assign _zz_when_AFix_l766_173 = _zz__zz_when_AFix_l766_173;
   assign when_AFix_l766_83 = ($signed(_zz_when_AFix_l766_83_1) < $signed(_zz_when_AFix_l766_83_3));
@@ -138687,9 +138687,9 @@ module SpanWalker (
   end
 
   assign when_AFix_l771_130 = ($signed(_zz_when_AFix_l771_130) < $signed(_zz_when_AFix_l771_130_1));
-  assign when_SpanWalker_l312 = (state_1 == WalkerState_SearchRightToExit);
-  assign when_SpanWalker_l313 = ((($signed(_zz_when_SpanWalker_l313) <= $signed(_zz_when_SpanWalker_l313_3)) && ($signed(_zz_when_SpanWalker_l313_4) <= $signed(_zz_when_SpanWalker_l313_7))) && ($signed(_zz_when_SpanWalker_l313_8) <= $signed(_zz_when_SpanWalker_l313_11)));
-  assign when_SpanWalker_l314 = ($signed(visibleEndPix) <= $signed(_zz_when_SpanWalker_l314));
+  assign when_SpanWalker_l314 = (state_1 == WalkerState_SearchRightToExit);
+  assign when_SpanWalker_l315 = ((($signed(_zz_when_SpanWalker_l315) <= $signed(_zz_when_SpanWalker_l315_3)) && ($signed(_zz_when_SpanWalker_l315_4) <= $signed(_zz_when_SpanWalker_l315_7))) && ($signed(_zz_when_SpanWalker_l315_8) <= $signed(_zz_when_SpanWalker_l315_11)));
+  assign when_SpanWalker_l316 = ($signed(visibleEndPix) <= $signed(_zz_when_SpanWalker_l316));
   assign _zz_when_AFix_l766_266 = _zz__zz_when_AFix_l766_266;
   assign when_AFix_l766_131 = ($signed(_zz_when_AFix_l766_131_1) < $signed(_zz_when_AFix_l766_131_3));
   always @(*) begin
@@ -138900,25 +138900,25 @@ module SpanWalker (
   end
 
   assign when_AFix_l771_144 = ($signed(_zz_when_AFix_l771_144) < $signed(_zz_when_AFix_l771_144_1));
-  assign when_SpanWalker_l328 = (((state_1 == WalkerState_EmitSpan) && emitVisible) && o_ready);
-  assign when_SpanWalker_l336 = ((state_1 == WalkerState_EmitSpan) && (! emitVisible));
-  assign when_SpanWalker_l341 = (state_1 == WalkerState_AdvanceRow);
+  assign when_SpanWalker_l330 = (((state_1 == WalkerState_EmitSpan) && emitVisible) && o_ready);
+  assign when_SpanWalker_l338 = ((state_1 == WalkerState_EmitSpan) && (! emitVisible));
+  assign when_SpanWalker_l343 = (state_1 == WalkerState_AdvanceRow);
   assign _zz_when_AFix_l766_280 = _zz__zz_when_AFix_l766_280;
   assign when_AFix_l766_145 = ($signed(_zz_when_AFix_l766_145_1) < $signed(_zz_when_AFix_l766_145_3));
   always @(*) begin
     if(when_AFix_l766_145) begin
-      _zz_when_SpanWalker_l343 = 16'h7fff;
+      _zz_when_SpanWalker_l345 = 16'h7fff;
     end else begin
       if(when_AFix_l771_145) begin
-        _zz_when_SpanWalker_l343 = 16'h8000;
+        _zz_when_SpanWalker_l345 = 16'h8000;
       end else begin
-        _zz_when_SpanWalker_l343 = _zz__zz_when_SpanWalker_l343;
+        _zz_when_SpanWalker_l345 = _zz__zz_when_SpanWalker_l345;
       end
     end
   end
 
   assign when_AFix_l771_145 = ($signed(_zz_when_AFix_l771_145) < $signed(_zz_when_AFix_l771_145_1));
-  assign when_SpanWalker_l343 = ($signed(_zz_when_SpanWalker_l343_1) <= $signed(_zz_when_SpanWalker_l343_2));
+  assign when_SpanWalker_l345 = ($signed(_zz_when_SpanWalker_l345_1) <= $signed(_zz_when_SpanWalker_l345_2));
   assign _zz_rowGuess_coords_0 = _zz__zz_rowGuess_coords_0;
   assign _zz_when_AFix_l766_281 = _zz__zz_when_AFix_l766_281;
   assign when_AFix_l766_146 = ($signed(_zz_when_AFix_l766_146_1) < $signed(_zz_when_AFix_l766_146_3));
@@ -139625,17 +139625,17 @@ module SpanWalker (
             recoverFoundInside <= 1'b0;
             state_1 <= WalkerState_SearchRightToExit;
           end else begin
-            if(when_SpanWalker_l271) begin
+            if(when_SpanWalker_l273) begin
               state_1 <= WalkerState_SearchRightToEnter;
             end
           end
         end
       end
-      if(when_SpanWalker_l280) begin
-        if(when_SpanWalker_l281) begin
+      if(when_SpanWalker_l282) begin
+        if(when_SpanWalker_l283) begin
           state_1 <= WalkerState_SearchRightToExit;
         end else begin
-          if(when_SpanWalker_l285) begin
+          if(when_SpanWalker_l287) begin
             if(firstSpanPending) begin
               nextRowLeftBiased <= 1'b0;
               state_1 <= WalkerState_AdvanceRow;
@@ -139646,18 +139646,18 @@ module SpanWalker (
           end
         end
       end
-      if(when_SpanWalker_l296) begin
-        if(when_SpanWalker_l297) begin
-          if(when_SpanWalker_l298) begin
+      if(when_SpanWalker_l298) begin
+        if(when_SpanWalker_l299) begin
+          if(when_SpanWalker_l300) begin
             state_1 <= WalkerState_SearchRightToExit;
           end
         end else begin
           state_1 <= WalkerState_SearchRightToExit;
         end
       end
-      if(when_SpanWalker_l312) begin
-        if(when_SpanWalker_l313) begin
-          if(when_SpanWalker_l314) begin
+      if(when_SpanWalker_l314) begin
+        if(when_SpanWalker_l315) begin
+          if(when_SpanWalker_l316) begin
             emitFirstSpan <= firstSpanPending;
             state_1 <= WalkerState_EmitSpan;
           end
@@ -139666,18 +139666,18 @@ module SpanWalker (
           state_1 <= WalkerState_EmitSpan;
         end
       end
-      if(when_SpanWalker_l328) begin
+      if(when_SpanWalker_l330) begin
         firstSpanPending <= 1'b0;
         nextRowLeftBiased <= 1'b1;
         state_1 <= WalkerState_AdvanceRow;
       end
-      if(when_SpanWalker_l336) begin
+      if(when_SpanWalker_l338) begin
         firstSpanPending <= 1'b0;
         nextRowLeftBiased <= 1'b1;
         state_1 <= WalkerState_AdvanceRow;
       end
-      if(when_SpanWalker_l341) begin
-        if(when_SpanWalker_l343) begin
+      if(when_SpanWalker_l343) begin
+        if(when_SpanWalker_l345) begin
           state_1 <= WalkerState_Idle;
           firstSpanPending <= 1'b0;
           recoverFoundInside <= 1'b0;
@@ -139913,20 +139913,22 @@ module SpanWalker (
             leftEdge_edge_1 <= _zz_leftEdge_edge_1_6;
             leftEdge_edge_2 <= _zz_leftEdge_edge_2_6;
           end
-          probe_coords_0 <= _zz_probe_coords_0_6;
-          probe_coords_1 <= _zz_probe_coords_1_1;
-          probe_linear_red <= _zz_probe_linear_red_6;
-          probe_linear_green <= _zz_probe_linear_green_6;
-          probe_linear_blue <= _zz_probe_linear_blue_6;
-          probe_linear_depth <= _zz_probe_linear_depth_6;
-          probe_linear_alpha <= _zz_probe_linear_alpha_6;
-          probe_linear_w <= _zz_probe_linear_w_6;
-          probe_hiS <= _zz_probe_hiS_6;
-          probe_hiT <= _zz_probe_hiT_6;
-          probe_hiAlpha <= _zz_probe_hiAlpha_6;
-          probe_edge_0 <= _zz_probe_edge_0_6;
-          probe_edge_1 <= _zz_probe_edge_1_6;
-          probe_edge_2 <= _zz_probe_edge_2_6;
+          if(recoverFoundInside) begin
+            probe_coords_0 <= _zz_probe_coords_0_6;
+            probe_coords_1 <= _zz_probe_coords_1_1;
+            probe_linear_red <= _zz_probe_linear_red_6;
+            probe_linear_green <= _zz_probe_linear_green_6;
+            probe_linear_blue <= _zz_probe_linear_blue_6;
+            probe_linear_depth <= _zz_probe_linear_depth_6;
+            probe_linear_alpha <= _zz_probe_linear_alpha_6;
+            probe_linear_w <= _zz_probe_linear_w_6;
+            probe_hiS <= _zz_probe_hiS_6;
+            probe_hiT <= _zz_probe_hiT_6;
+            probe_hiAlpha <= _zz_probe_hiAlpha_6;
+            probe_edge_0 <= _zz_probe_edge_0_6;
+            probe_edge_1 <= _zz_probe_edge_1_6;
+            probe_edge_2 <= _zz_probe_edge_2_6;
+          end
         end else begin
           probe_coords_0 <= _zz_probe_coords_0_7;
           probe_coords_1 <= _zz_probe_coords_1_2;
@@ -139974,7 +139976,7 @@ module SpanWalker (
           probe_edge_1 <= _zz_probe_edge_1_9;
           probe_edge_2 <= _zz_probe_edge_2_9;
         end else begin
-          if(when_SpanWalker_l271) begin
+          if(when_SpanWalker_l273) begin
             probe_coords_0 <= _zz_probe_coords_0_10;
             probe_coords_1 <= _zz_probe_coords_1_4;
             probe_linear_red <= _zz_probe_linear_red_10;
@@ -140008,8 +140010,8 @@ module SpanWalker (
         end
       end
     end
-    if(when_SpanWalker_l280) begin
-      if(when_SpanWalker_l281) begin
+    if(when_SpanWalker_l282) begin
+      if(when_SpanWalker_l283) begin
         leftEdge_coords_0 <= _zz_leftEdge_coords_0_9;
         leftEdge_coords_1 <= _zz_leftEdge_coords_1_3;
         leftEdge_linear_red <= _zz_leftEdge_linear_red_9;
@@ -140039,7 +140041,7 @@ module SpanWalker (
         bookmark_edge_1 <= _zz_bookmark_edge_1_3;
         bookmark_edge_2 <= _zz_bookmark_edge_2_3;
       end else begin
-        if(when_SpanWalker_l285) begin
+        if(when_SpanWalker_l287) begin
           if(firstSpanPending) begin
             nextRowBase_coords_0 <= _zz_nextRowBase_coords_0;
             nextRowBase_coords_1 <= _zz_nextRowBase_coords_1;
@@ -140089,9 +140091,9 @@ module SpanWalker (
         end
       end
     end
-    if(when_SpanWalker_l296) begin
-      if(when_SpanWalker_l297) begin
-        if(when_SpanWalker_l298) begin
+    if(when_SpanWalker_l298) begin
+      if(when_SpanWalker_l299) begin
+        if(when_SpanWalker_l300) begin
           if(when_SpanWalker_l207_1) begin
             leftEdge_coords_0 <= _zz_leftEdge_coords_0_10;
             leftEdge_coords_1 <= _zz_leftEdge_coords_1_4;
@@ -140184,9 +140186,9 @@ module SpanWalker (
         probe_edge_2 <= _zz_probe_edge_2_18;
       end
     end
-    if(when_SpanWalker_l312) begin
-      if(when_SpanWalker_l313) begin
-        if(when_SpanWalker_l314) begin
+    if(when_SpanWalker_l314) begin
+      if(when_SpanWalker_l315) begin
+        if(when_SpanWalker_l316) begin
           emitRight <= _zz_emitRight_1;
         end else begin
           probe_coords_0 <= _zz_probe_coords_0_19;
@@ -140208,7 +140210,7 @@ module SpanWalker (
         emitRight <= _zz_emitRight_3;
       end
     end
-    if(when_SpanWalker_l328) begin
+    if(when_SpanWalker_l330) begin
       nextRowBase_coords_0 <= _zz_nextRowBase_coords_0_2;
       nextRowBase_coords_1 <= _zz_nextRowBase_coords_1_2;
       nextRowBase_linear_red <= _zz_nextRowBase_linear_red_2;
@@ -140224,7 +140226,7 @@ module SpanWalker (
       nextRowBase_edge_1 <= _zz_nextRowBase_edge_1_2;
       nextRowBase_edge_2 <= _zz_nextRowBase_edge_2_2;
     end
-    if(when_SpanWalker_l336) begin
+    if(when_SpanWalker_l338) begin
       nextRowBase_coords_0 <= _zz_nextRowBase_coords_0_3;
       nextRowBase_coords_1 <= _zz_nextRowBase_coords_1_3;
       nextRowBase_linear_red <= _zz_nextRowBase_linear_red_3;
@@ -140240,8 +140242,8 @@ module SpanWalker (
       nextRowBase_edge_1 <= _zz_nextRowBase_edge_1_3;
       nextRowBase_edge_2 <= _zz_nextRowBase_edge_2_3;
     end
-    if(when_SpanWalker_l341) begin
-      if(!when_SpanWalker_l343) begin
+    if(when_SpanWalker_l343) begin
+      if(!when_SpanWalker_l345) begin
         rowGuess_coords_0 <= _zz_rowGuess_coords_0_4;
         rowGuess_coords_1 <= _zz_rowGuess_coords_1_4;
         rowGuess_linear_red <= _zz_rowGuess_linear_red_5;

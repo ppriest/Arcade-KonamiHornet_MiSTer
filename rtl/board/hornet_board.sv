@@ -107,6 +107,7 @@ module hornet_board (
     input  logic [31:0] ppc_dbg_wdata,
     output logic        dsp_dbg_exec,
     output logic [23:0] dsp_dbg_pc,
+    output logic [47:0] dsp_dbg_op,
     input  logic [5:0]  dsp_dbg_sel,
     output logic [31:0] dsp_dbg_val,
     input  logic        dsp_dbg_pm_we,
@@ -156,6 +157,16 @@ logic [31:0] k033906_membase, k033906_intline, k033906_r14;
 logic        irq0;              // PPC IRQ0: Voodoo vblank, cleared by sysreg 7 bit 6
 logic [7:0]  snd_to_host [2];   // K056800, written by the (absent) 68000
 logic [7:0]  host_to_snd [4];
+// Stand-in for the 68000's side of the K056800 (HACKS.md): once SNDRES (sysreg 4 bit 7) lets it
+// run, its 344.5 Hz timer (hornet.cpp:1405) counts the low nibble of snd_to_host[0]; a sound
+// interrupt (host register 7) is answered SND_ACK clocks later by counting once more and
+// toggling bit 7. MAME's boot: 0x05..0x0C, command, 0x8D within 511 polls
+// (debug/gradius4-bootlog); in play 0x85 (frame 7500).
+localparam int SND_TICK = 185760;      // clk_sys (64 MHz) / (16.9344 MHz / 384 / 128)
+localparam int SND_ACK  = 4096;        // the 68000's interrupt handler, well inside MAME's 511 polls
+logic        snd_run, snd_pend;
+logic [17:0] snd_tick;
+logic [12:0] snd_ack;
 logic [31:0] k037122_reg [64];
 
 typedef enum logic [1:0] { XS_IDLE, XS_ONE, XS_VRD } xs_t;
@@ -200,13 +211,15 @@ always_ff @(posedge clk) begin
 end
 always_ff @(posedge clk) kv_q <= ksram[kv_addr];      // the video's port
 
-// M48T58: 8 KB, byte-wide on the PPC's bus
-logic [7:0]  nvram [8192];
-logic [12:0] nv_addr;
-logic [7:0]  nv_q, nv_wdata;
-logic        nv_we;
+
+// M48T58: 8 KB, 4 bytes a PPC word (MAME's 8-bit handlers on the 32-bit bus: a word access
+// is 4 consecutive bytes, byte 0 in bits 31:24)
+logic [31:0] nvram [2048];
+logic [10:0] nv_addr;
+logic [31:0] nv_q, nv_wdata;
+logic [3:0]  nv_we;
 always_ff @(posedge clk) begin
-    if (nv_we) nvram[nv_addr] <= nv_wdata;
+    for (int b = 0; b < 4; b++) if (nv_we[b]) nvram[nv_addr][b*8 +: 8] <= nv_wdata[b*8 +: 8];
     nv_q <= nvram[nv_addr];
 end
 
@@ -291,14 +304,16 @@ always_comb begin
     ks_addr = d_addr[16:2];
     ks_wdata = d_wdata;
     ks_we = (run && d_req && d_we && d_ksr) ? d_be : 4'b0;
-    nv_addr = {d_addr[12:2], lane(d_be)};
-    nv_wdata = d_wdata[8*(3 - lane(d_be)) +: 8];
-    nv_we = run && d_req && d_we && d_nv;
+    nv_addr = d_addr[12:2];
+    nv_wdata = d_wdata;
+    nv_we = (run && d_req && d_we && d_nv) ? d_be : 4'b0;
     // state load: the same ports, the CPUs held
     if (!run && ld_we) begin
         shp_addr = ld_addr[14:0]; shp_wdata = ld_data; shp_we = {4{ld_sel == 4'd0}};
         ks_addr  = ld_addr[14:0]; ks_wdata  = ld_data; ks_we  = {4{ld_sel == 4'd1}};
-        nv_addr  = ld_addr[12:0]; nv_wdata  = ld_data[7:0]; nv_we = ld_sel == 4'd2;
+        // a byte: ld_addr[1:0] 0 is bits 31:24
+        nv_addr  = ld_addr[12:2]; nv_wdata = {4{ld_data[7:0]}};
+        nv_we = (ld_sel == 4'd2) ? 4'(4'b1000 >> ld_addr[1:0]) : 4'b0;
     end
 end
 
@@ -328,7 +343,7 @@ always_comb begin
         else case (dv_bram_sel)
             2'd0: d_rdata = shp_q;
             2'd1: d_rdata = ks_q;
-            default: d_rdata = {4{nv_q}};
+            default: d_rdata = nv_q;
         endcase
     end
 end
@@ -432,7 +447,7 @@ sharc_core dsp (
     .ext_req(x_req), .ext_we(x_we), .ext_addr(x_addr), .ext_wdata(x_wdata),
     .ext_ack(x_ack), .ext_rdata(x_rdata),
     .irq_in(3'b0), .irq_assert(dsp_irq_assert), .irq_check_en(1'b1), .dbg_irq_set(32'h0),
-    .dbg_exec(dsp_dbg_exec), .dbg_pc(dsp_dbg_pc), .dbg_op(), .dbg_sel(dsp_dbg_sel),
+    .dbg_exec(dsp_dbg_exec), .dbg_pc(dsp_dbg_pc), .dbg_op(dsp_dbg_op), .dbg_sel(dsp_dbg_sel),
     .dbg_val(dsp_dbg_val), .dbg_idle(ev_dsp_idle),
     .dbg_pm_we(dsp_dbg_pm_we), .dbg_pm_addr(dsp_dbg_pm_addr), .dbg_pm_wdata(dsp_dbg_pm_wdata),
     .dbg_dm_we(dsp_dbg_dm_we), .dbg_dm_addr(dsp_dbg_dm_addr), .dbg_dm_wdata(dsp_dbg_dm_wdata),
@@ -500,7 +515,7 @@ end
 //   5 comm: addr 0/1 comm_ppc, 2/3 comm_sharc, 4 {bank, dsp_run, k033906_regs, cg_bank,
 //     enable_3d} in bits 4..0, 5 dsp_state, 6 cg_id, 7 irq0
 //   6 K033906 registers: addr 0 membase, 1 intline, 2 reg 0x14
-//   7 K056800: addr 0-1 snd_to_host, 2-5 host_to_snd
+//   7 K056800: addr 0-1 snd_to_host, 2-5 host_to_snd, 6 {pending, SNDRES} of the 68000 stand-in
 //   8 video: vpos in bits 9:0, vblank in bit 16 (above)
 //   9 Voodoo CLUT entry ld_addr[5:0] (0-32), 0x00RRGGBB (above)
 task automatic ld_regs();
@@ -523,7 +538,8 @@ task automatic ld_regs();
         default: k033906_r14 <= ld_data;
         endcase
     4'd7: if (ld_addr[2:0] < 3'd2) snd_to_host[ld_addr[0]] <= ld_data[7:0];
-          else host_to_snd[2'(ld_addr[2:0] - 3'd2)] <= ld_data[7:0];
+          else if (ld_addr[2:0] < 3'd6) host_to_snd[2'(ld_addr[2:0] - 3'd2)] <= ld_data[7:0];
+          else begin snd_run <= ld_data[0]; snd_pend <= ld_data[1]; end
     default: ;
     endcase
 endtask
@@ -540,6 +556,7 @@ always_ff @(posedge clk) begin
         cg_bank <= 1'b0; cg_id <= 2'd0; k033906_regs <= 1'b0;
         k033906_membase <= 32'h0; k033906_intline <= 32'h0; k033906_r14 <= 32'h0;
         for (int i = 0; i < 2; i++) snd_to_host[i] <= 8'h0;
+        snd_run <= 1'b0; snd_pend <= 1'b0; snd_tick <= 18'd0; snd_ack <= 13'd0;
         for (int i = 0; i < 4; i++) host_to_snd[i] <= 8'h0;
         for (int i = 0; i < 64; i++) k037122_reg[i] <= 32'h0;
     end else begin
@@ -571,6 +588,28 @@ always_ff @(posedge clk) begin
             end
             if (d_snd && {d_addr[2], lane(d_be)} < 3'd4)
                 host_to_snd[{d_addr[2], lane(d_be)}] <= d_wdata[8*(3 - lane(d_be)) +: 8];
+            if (d_snd && {d_addr[2], lane(d_be)} == 3'd7) begin                  // sound interrupt
+                snd_pend <= 1'b1; snd_ack <= 13'd0;
+            end
+            if (d_sysw && {d_addr[15:2], lane(d_be)} == 16'd4)
+                snd_run <= d_wdata[8*(3 - lane(d_be)) + 7];                   // SNDRES
+        end
+        // the stand-in's timer tick
+        if (!snd_run) snd_tick <= 18'd0;
+        else if (!run) ;
+        else begin
+            logic [3:0] c;
+            c = snd_to_host[0][3:0];
+            if (snd_tick == 18'(SND_TICK - 1)) begin snd_tick <= 18'd0; c = c + 4'd1; end
+            else snd_tick <= snd_tick + 18'd1;
+            if (snd_pend) begin
+                if (snd_ack == 13'(SND_ACK - 1)) begin
+                    c = c + 4'd1;
+                    snd_to_host[0][7] <= !snd_to_host[0][7];
+                    snd_pend <= 1'b0;
+                end else snd_ack <= snd_ack + 13'd1;
+            end
+            snd_to_host[0][3:0] <= c;
         end
         if (vb_start) irq0 <= 1'b1;
         if (vb_stop)  irq0 <= 1'b0;

@@ -15,6 +15,11 @@
     and 0 of 221,502 (window 2150).
   - `0002-dither-2x2-mame.patch`: MAME's 2x2 dither matrix in place of 86Box's
     (`docs/MAME_KLUDGES.md`, Voodoo 1).
+  - `0003-spanwalker-recover-left-probe.patch`: SpanWalker's RecoverLeft set the probe to the
+    old bookmark when the probe was the row's first inside pixel, so a span could run on to the
+    row guess outside the triangle. Found and checked by the Hyper NeoGeo 64 core (10,179
+    triangles against an exact edge-function model: 5 with an extra pixel before, 0 after; its
+    rtl/3d/PROVENANCE.md). Here frames 2150 and 7500 are unchanged (the path is not taken).
 - `CoreHornet.v` (and its `CoreHornet.v_*.bin`): the same sources and patches, generated with
   `--main-class hornet.CoreHornetGen` from `rtl/voodoo/gen/CoreHornet.scala`: vertical retrace
   from the board, the displayed buffer's base out, SpinalVoodoo's HDMI scanout held in reset.
