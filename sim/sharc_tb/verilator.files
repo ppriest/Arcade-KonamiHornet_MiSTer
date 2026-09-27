@@ -1,0 +1,5 @@
+sim/sharc_tb/phase.vlt
+-Irtl/cpu/sharc
+rtl/cpu/sharc/sharc_fp_pkg.sv
+rtl/cpu/sharc/sharc_core.sv
+sim/sharc_tb/tb_sharc.sv

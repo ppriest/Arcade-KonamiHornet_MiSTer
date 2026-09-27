@@ -1,0 +1,2 @@
+rtl/cpu/sharc/sharc_fp_pkg.sv
+sim/sharcfp_tb/tb_sharcfp.sv

@@ -98,3 +98,8 @@ releases/*.rbf
 **/.DS_Store
 __pycache__/
 *.pyc
+
+# SpinalVoodoo ROM sidecars copied for sim/voodoo_tb (scripts/verilator_prep.sh)
+/CoreDe10.v_*.bin
+/CoreHornet.v_*.bin
+obj_voodoo

@@ -1,0 +1,32 @@
+diff --git a/src/voodoo/texture/Tmu.scala b/src/voodoo/texture/Tmu.scala
+index 8b06179..f3e8722 100644
+--- a/src/voodoo/texture/Tmu.scala
++++ b/src/voodoo/texture/Tmu.scala
+@@ -694,8 +694,11 @@ object Tmu {
+     bankMsb := byteOffsLow(shift)
+     bankLsb := byteOffsLow(0)
+     when(is16Bit) {
+-      bankMsb := byteOffsLow(shift) | byteOffsLow((shift + 1).resized)
+-      bankLsb := byteOffsLow(0) | byteOffsLow(1)
++      // 16-bit rows are 2 << shift bytes: the row's low bit is offset bit shift+1, the
++      // column's low bit offset bit 1. Bit shift is a column bit; ORing it in put both rows
++      // of a 2x2 footprint in the same bank for the right half of every row.
++      bankMsb := byteOffsLow((shift + 1).resized)
++      bankLsb := byteOffsLow(1)
+     }
+     (in, (bankMsb ## bankLsb).asUInt, !is16Bit && byteOffsLow(1))
+   }
+diff --git a/src/voodoo/texture/TmuTextureCache.scala b/src/voodoo/texture/TmuTextureCache.scala
+index 465ea78..25fd3ac 100644
+--- a/src/voodoo/texture/TmuTextureCache.scala
++++ b/src/voodoo/texture/TmuTextureCache.scala
+@@ -762,7 +762,8 @@ case class TmuTextureCache(
+ 
+   fillRsp.ready := !fillFetchEmit || fillFetchRaw.ready
+   fillFetchRaw.valid := fillRsp.valid && fillFetchEmit
+-  fillFetchRaw.payload := ownerRspCommitted
++  // ownerRsp: the texel captured on this word is not in owner.texels until the next clock.
++  fillFetchRaw.payload := ownerRsp
+ 
+   when(fillRsp.fire) {
+     val nextWordAddr =

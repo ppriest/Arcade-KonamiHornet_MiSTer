@@ -1,0 +1,12 @@
+`verilator_config
+// the texture path's request and fetch ports, readable from main.cpp (texel check)
+public_flat_rd -module "TmuTextureCache" -var "io_sample*"
+public_flat_rd -module "TmuTextureCache" -var "clk"
+public_flat_rd -module "TmuTextureCache" -var "dbgDataValid"
+public_flat_rd -module "TmuTextureCache" -var "fillRsp_fire"
+public_flat_rd -module "TmuTextureCache" -var "fillRsp_payload_fragment_data"
+public_flat_rd -module "TmuTextureCache" -var "wordAddr"
+public_flat_rd -module "TmuTextureCache" -var "fill_req_lineBase"
+public_flat_rd -module "TmuTextureCache" -var "fill_set"
+public_flat_rd -module "TmuTextureCache" -var "fill_way"
+public_flat_rd -module "TmuTextureCache" -var "mask"

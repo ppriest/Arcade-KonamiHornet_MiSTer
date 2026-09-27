@@ -1,0 +1,3 @@
+sim/voodoo_tb/texpath.vlt
+rtl/voodoo/spinalvoodoo/CoreDe10.v
+sim/voodoo_tb/tb_voodoo.sv

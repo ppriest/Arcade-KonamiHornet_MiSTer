@@ -1084,6 +1084,17 @@ ack address that is also an input port must acknowledge on writes only.
 
 ## Driving MAME as a reference generator (Lua)
 
+- **[KonamiHornet] At a frame notifier, `screen:pixels()` is the picture shown during the PREVIOUS
+  frame, and the screen's geometry may not be the driver's `set_raw`.** A composed-screen compare
+  of the board model against MAME's frame N differed in 108k pixels while the model's Voodoo
+  buffer matched MAME's exactly. Rebuilding MAME's output in Python from each dumped buffer found
+  the frame-N screen equal (0 pixels) to the buffer that was displayed BEFORE the swap between the
+  two captures, at column offset 0. Two assumptions were wrong: the capture shows frame N - 1's
+  picture, and the visible area starts at x 42, not `set_raw`'s 41, because the Voodoo's
+  `recompute_video_timing` reconfigures the screen from its own registers. Compare a model's frame
+  N with MAME's capture N + 1, and take the visible area from the device that sets it, not from
+  the machine config. `screen.visible_area` and `screen:vpos()` are nil in 0.289's binding;
+  `screen:pixels()` returns the visible area's size as its 2nd and 3rd values.
 - **[BallySente] A sound reference captured without starting the game is the SOUND BOARD's boot
   routine, not the game's.** Four Bally/Sente cartridges were captured for 10 s each and replayed
   against the model, and all four produced identical numbers to four significant figures. That

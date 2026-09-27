@@ -1,0 +1,41 @@
+diff --git a/src/voodoo/pixel/DitherTableData.scala b/src/voodoo/pixel/DitherTableData.scala
+index 5590c6d..d339d3a 100644
+--- a/src/voodoo/pixel/DitherTableData.scala
++++ b/src/voodoo/pixel/DitherTableData.scala
+@@ -924,8 +924,19 @@ private[pixel] object DitherTableData {
+     255, 254, 255
+   )
+ 
+-  lazy val rbPacked: Array[Int] = rb4x4 ++ rb2x2
+-  lazy val gPacked: Array[Int] = g4x4 ++ g2x2
++  // Konami Hornet core: MAME's 2x2 dither (matrix 8 10 / 11 9, voodoo_render.cpp) in place of
++  // 86Box's (2 10 / 14 6); the 4x4 tables agree. See the core's docs/MAME_KLUDGES.md.
++  private val mame2x2 = Array(8, 10, 11, 9)
++  lazy val mameRb2x2: Array[Int] = Array.tabulate(1024) { i =>
++    val v = i >> 2
++    ((v << 1) - (v >> 4) + (v >> 7) + mame2x2(i & 3)) >> 4
++  }
++  lazy val mameG2x2: Array[Int] = Array.tabulate(1024) { i =>
++    val v = i >> 2
++    ((v << 2) - (v >> 4) + (v >> 6) + mame2x2(i & 3)) >> 4
++  }
++  lazy val rbPacked: Array[Int] = rb4x4 ++ mameRb2x2
++  lazy val gPacked: Array[Int] = g4x4 ++ mameG2x2
+   lazy val dsubRbPacked: Array[Int] = dsubRb4x4 ++ dsubRb2x2
+   lazy val dsubGPacked: Array[Int] = dsubG4x4 ++ dsubG2x2
+ }
+diff --git a/src/voodoo/pixel/DitherTables.scala b/src/voodoo/pixel/DitherTables.scala
+index e1074a2..7a14c41 100644
+--- a/src/voodoo/pixel/DitherTables.scala
++++ b/src/voodoo/pixel/DitherTables.scala
+@@ -3,8 +3,8 @@ package voodoo.pixel
+ object DitherTables {
+   lazy val rb4x4: Array[Int] = DitherTableData.rb4x4
+   lazy val g4x4: Array[Int] = DitherTableData.g4x4
+-  lazy val rb2x2: Array[Int] = DitherTableData.rb2x2
+-  lazy val g2x2: Array[Int] = DitherTableData.g2x2
++  lazy val rb2x2: Array[Int] = DitherTableData.mameRb2x2
++  lazy val g2x2: Array[Int] = DitherTableData.mameG2x2
+ 
+   lazy val dsubRb4x4: Array[Int] = DitherTableData.dsubRb4x4
+   lazy val dsubG4x4: Array[Int] = DitherTableData.dsubG4x4

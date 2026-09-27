@@ -1,0 +1,2 @@
+rtl/cpu/ppc403/ppc403_core.sv
+sim/ppc_tb/tb_ppc.sv

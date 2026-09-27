@@ -1,0 +1,3 @@
+sim/voodoo_tb/texpath.vlt
+obj_voodoo/patched/CoreDe10.v
+sim/voodoop_tb/tb_voodoop.sv

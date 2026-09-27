@@ -1,0 +1,8 @@
+-Irtl/cpu/sharc
+rtl/cpu/sharc/sharc_fp_pkg.sv
+rtl/cpu/sharc/sharc_core.sv
+rtl/cpu/ppc403/ppc403_core.sv
+rtl/voodoo/spinalvoodoo/CoreHornet.v
+rtl/board/hornet_video.sv
+rtl/board/hornet_board.sv
+obj_verilator/tb_board.sv

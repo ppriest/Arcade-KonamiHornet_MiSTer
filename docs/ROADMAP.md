@@ -1,250 +1,180 @@
-# {{HARDWARE_NAME}} — MiSTer Core Roadmap
+# Konami Hornet — MiSTer Core Roadmap
 
-**This roadmap is a proposal until the user approves it. No phase executes before that approval,
-and a phase whose scope changes goes back for approval.**
+**The user directed implementation to start before this roadmap was reviewed. The phase order
+below is a proposal; a phase whose scope changes goes back to the user.**
 
 ## Context
 
-Goal: a DE10-nano MiSTer core for {{HARDWARE_NAME}}, emulated by MAME's `{{MAME_DRIVER}}` and the
-devices it instantiates — a Quartus 17.0.2 Verilog/SystemVerilog project producing one `.rbf` and a
-`.mra` per supported set, reusing proven open components where they exist.
+Goal: a DE10-nano MiSTer core for Konami's Hornet board, first target Gradius IV (`gradius4`),
+emulated by MAME's `konami/hornet.cpp` and the devices it instantiates — a Quartus 17.0.2 project
+producing one `.rbf` and a `.mra` per supported set.
 
-{{WHAT_SHAPES_THIS_PROJECT}}
-<!-- The one fact that sets the shape: how much already exists in open RTL, whether the CPU is
-     proven in a sibling core, what has no implementation anywhere. Then a numbered list of what
-     is genuinely new work. Everything else is a port with verification. -->
+**Nothing on this board has open RTL except the sound CPU** (fx68k). Everything else is written
+from MAME's model:
 
-Cross-cutting findings from the previous cores are in **[`LESSONS_LEARNED.md`](LESSONS_LEARNED.md)**.
-Working practice built on them is in **[`WORKFLOW.md`](WORKFLOW.md)**. The entries that already
-bind decisions here are collected under "Pitfalls that already bind decisions here".
+1. PowerPC 403GA main CPU.
+2. ADSP-21062 SHARC geometry DSP.
+3. 3dfx Voodoo 1 rasteriser, unless SpinalVoodoo's author grants a licence.
+4. K037122 tilemap, K033906 PCI shim, K056800 sound mailbox, RF5C400 PCM.
+
+Whether it fits one DE10-nano is open: `HARDWARE_NOTES.md`, "Feasibility". Phase 0 is the gate
+that answers it.
+
+Background and sources for every number: [`HARDWARE_NOTES.md`](HARDWARE_NOTES.md).
 
 ## Progress
 
-{{PROGRESS}}
-<!-- Kept current. Opens with one bold sentence on where the project is. Every number says where
-     it came from: MAME source, a sibling core's measurement, a build report, a bench run. Use
-     "N of N" counts, not adjectives. Strike through closed items while a later reader needs the
-     history; delete them when nobody does. -->
+**Phase 0 in progress: the PPC403GA core matches MAME instruction for instruction on boot,
+attract and gameplay code.**
+
+- `rtl/cpu/ppc403/ppc403_core.sv`, bench `sim/ppc_tb`, diff `scripts/compare_insn_trace.py`.
+- From reset (`scripts/mame_insn_trace.py`): 1,000,000 of 1,000,000 instructions agree in PC
+  and 37 registers (the boot RAM test).
+- Windows (`scripts/mame_ppc_window.py`: MAME state and work RAM at a frame, device reads,
+  interrupts and timebase reads replayed): frame 3000 (attract) 743,505 of 743,505; frame 7500
+  (stage 1) 2,000,000 of 2,000,000.
+- PPC pipelined: 1.75-1.94 clocks per instruction at one-clock memory, 5,911 ALMs standalone
+  (HARDWARE_NOTES); the last timing run did not finish.
+- SHARC (`rtl/cpu/sharc/`, bench `sim/sharc_tb`, `scripts/compare_sharc_trace.py`, windows from
+  `scripts/mame_sharc_window.py` with MAME's whole saved state): frame 3000 300,000 of 300,000,
+  frame 7500 2,000,000 of 2,000,000 instructions agree in PC and 56 registers. Clocks per
+  instruction with the bench's zero-wait external bus: 1.45 (window 3000), 2.05 (window 7500,
+  DMA active for about half its instructions). One execute clock holds the whole instruction,
+  float multiply and add included; its Fmax is not measured (no Quartus runs for now).
+- SHARC floating point (`sharc_fp_pkg.sv`): 9.2 M vectors bit-exact against MAME's host-float code.
+- SpinalVoodoo (`rtl/voodoo/spinalvoodoo`, bench `sim/voodoo_tb`, captures from
+  `scripts/mame_voodoo_window.py`): one frame replayed from MAME's state and the SHARC's writes.
+  Two texture fill-cache bugs fixed by patch (`rtl/voodoo/spinalvoodoo/PROVENANCE.md`); every
+  texel fetched now matches texture memory (`sim/voodoop_tb` texel check). 2x2 dither switched to
+  MAME's matrix (MAME_KLUDGES). Drawn buffer against MAME: frame 2150 (demo) 4,613 of 196,608
+  pixels differ; frame 7500 (stage 1 boss) 5,381, of which 268 by 8 or more per channel, isolated
+  pixels of small triangles (`scripts/voodoo_diff_by_state.py`). Grabs:
+  `docs/screenshots/voodoo/frame{2150,7500}_mame_core_diff.png`. Remaining differences accepted
+  (HACKS).
+- Board in simulation (Phase 1, `rtl/board/hornet_board.sv`, bench `sim/board_tb`, snapshot from
+  `scripts/mame_board_snapshot.py`): PPC, SHARC, shared RAM, comm, sysreg, M48T58, K033906 and
+  the Voodoo (`CoreHornet`), started from MAME's whole board at frame 7500 and run freely. Buffer
+  swaps follow MAME's on frames 7501-7504; the three frames the board rendered differ from MAME's
+  in 5,331-5,415 of 196,608 pixels, the Voodoo's accepted differences
+  (`docs/screenshots/board/frame7504_mame_board_diff.png`). One frame is about 95 s of Verilator.
+- Picture (`rtl/board/hornet_video.sv`): the Voodoo's displayed buffer through its CLUT under the
+  K037122 rotate/zoom tilemap, a line built during the one before. Against MAME's screen: frame
+  7501 0 of 196,608 pixels differ, 7502 5,378, 7503 5,310 (the Voodoo's differences;
+  `docs/screenshots/board/frame7503_mame_board_screen.png`). The K037122 in these frames is the
+  unrotated HUD; gradius4 never rotates or zooms it (`scripts/mame_k037122_scan.py`, frames
+  0-8400: increments fixed at 1.0 from frame 148).
+- Attract snapshot (frame 2150, `debug/gradius4-board2150`): frame 7501-equivalent matches (0
+  pixels); from the next frame the board is one frame behind MAME. The SHARC's frame job runs
+  about 525 lines (MAME: 10.8 ms, `scripts/mame_commlog.py`) because it waits 764k of 1.1M clocks
+  on the Voodoo's command FIFO: SpinalVoodoo needs 1.05M clocks for frame 2150's 1,200 triangles,
+  418k triangle pixels and one 196k-pixel fast fill, with zero memory latency (`sim/voodoo_tb`
+  +memlat=0). In play (7500) the wait is about 520k clocks a frame and the frame still fits.
+- Workload measured in MAME (`scripts/hornet_load.py`): HARDWARE_NOTES, "Measured workload".
 
 ## Game scope
 
-{{SET_TABLE}}
-<!-- Generated from each ROM_START: set, board type, machine config, loaded bytes per region,
-     MAME flags. Loaded bytes, not declared region size. -->
+| Set | Config | MAME status | Plan |
+|---|---|---|---|
+| gradius4 + 5 clones | `hornet_x76` | working | first target |
+| nbapbp + 7 clones | `nbapbp` (adds JVS) | working | second target |
+| terabrst, thrilld, sscope, sscope2 families | GN680 / LAN / two boards / Voodoo 2 | NOT_WORKING | out of scope |
 
-### Scope decision
+## Clocks
 
-- **In scope:** {{IN_SCOPE}} — one memory map, one screen, one chipset, fits the SDRAM module.
-- **Out of the first scope:** {{OUT_OF_SCOPE}} — give two independent reasons where they exist.
-- **First-target set:** {{FIRST_TARGET}} — the smallest set with the least protection involvement.
-  Final choice is a Phase 0 decision, made on which boots furthest, measured.
-- **Second target:** {{SECOND_TARGET}} — the set that exercises the next variant.
+| Clock | Rate | Source |
+|---|---|---|
+| PPC403GA | 32 MHz (64 MHz / 2) | hornet.cpp:1394 |
+| 68000 | 16 MHz (64 MHz / 4) | hornet.cpp:1403 |
+| SHARC | 36 MHz | hornet.cpp:1407 |
+| Voodoo | 50 MHz | hornet.cpp:1418 |
+| RF5C400, K056800 | 16.9344 MHz | hornet.cpp:1438, 1443 |
+| pixel | 16 MHz (64 MHz / 4), 644 x 428 total | hornet.cpp:1432 |
 
-## Hardware reality (from the driver, not assumption)
+**Provisional `clk_sys` = 64 MHz**, 4x the pixel clock and the board's own crystal. Enables: PPC
+timebase 1/2, 68000 1/4, pixel 1/4 (all exact); SHARC 9/16; Voodoo 25/32; RF5C400 16.9344/64 =
+0.2646 exactly (Bresenham). SDRAM at 128 MHz (2x).
 
-Every value below is read out of the MAME driver or a device file and cites file and line. A
-value from a datasheet, a schematic or a PCB measurement says so.
-
-### Chips
-
-{{CHIP_TABLE}}
-
-### Clocks
-
-{{CLOCKS}}
-<!-- The plan, before any RTL (the skill's clocks.md). Every board clock with its source line
-     and the pixel clock; the chosen clk_sys, which is also the video clock, with the candidates
-     considered and the arithmetic: an integer multiple (>= 4x) of the pixel clock, >= every
-     board clock, and a base for an integer SDRAM multiple. The SDRAM multiple. Every fractional
-     clock enable with its exact ratio. How far the main CPU runs ahead to catch up SDRAM stalls.
-     Any clock that does not divide exactly, in ppm, also goes in HACKS.md. -->
-
-### Interrupts
-
-{{INTERRUPTS}}
-<!-- Levels, sources, HOLD_LINE vs ASSERT_LINE in the driver, the enable/ack registers, and the
-     vectors as read from the program ROM. -->
-
-### Memory map
-
-{{MEMORY_MAP}}
-
-### Video
-
-{{VIDEO}}
-<!-- Layers, sprite format, colour depths, palette format, priority/mixing model, screen flip,
-     what MAME says it does not emulate. -->
-
-### Sound
-
-{{SOUND}}
-
-### Protection
-
-{{PROTECTION}}
-
-### Per-game configuration
-
-{{PER_GAME}}
-<!-- Everything that differs between sets and so becomes .mra mod-byte configuration. -->
+96 MHz (6x) is the alternative if the PPC or SHARC cannot meet the board's throughput at 64 MHz;
+it costs timing margin. Decided by Phase 0 criteria 3 and 4.
 
 ## Component reuse map
 
-Every row's "source" is a file that was located and whose header was read.
-
-| block | plan | source |
+| Block | Plan | Source |
 |---|---|---|
-{{REUSE_MAP}}
-<!-- plan: "Port X" / "Written from the software model" / "From scratch" / "Sibling core's Y".
-     source: repository, path, commit, licence as stated in the files. Built by enumerating the
-     boards that use each chip and looking at those boards' cores, not by searching for the chip
-     number. -->
-
-## On-chip RAM budget
-
-{{RAM_BUDGET}}
-<!-- Every declared memory, its bits, its M10K count at the width it is actually read at, as a
-     fraction of the device, starting from the framework's own baseline. Name the one to watch. -->
-
-## Memory plan
-
-{{MEMORY_PLAN}}
-<!-- SDRAM region layout (the RTL's localparams are the source of truth; the .mra generator reads
-     them), DDR use if any, the clients of each and the per-scanline fetch budget. -->
+| PPC403GA | written from MAME's model | `src/devices/cpu/powerpc/` |
+| ADSP-21062 | written from MAME's model | `src/devices/cpu/sharc/` |
+| Voodoo 1 | SpinalVoodoo, generated Verilog vendored; no binary release while unlicensed (user decision) | github.com/fayalalebrun/SpinalVoodoo (no licence) |
+| K037122 | written from MAME's model | `src/mame/konami/k037122.cpp` |
+| K033906, konppc glue | written from MAME's model | `k033906.cpp`, `konppc.cpp` |
+| 68000 | fx68k | a MiSTer core's `rtl/FX68K`, to be located and read before vendoring |
+| RF5C400 | written from MAME's model; jtpcm568 as structure | `src/devices/sound/rf5c400.cpp` |
+| K056800, M48T58, X76F041 | written from MAME's model | device files |
 
 ## Design decisions
 
-<!-- Each a bold sentence, then the evidence. Standing rules first, project decisions after. -->
+**Follow MAME, including where MAME is wrong, and write down every place that is**
+(`docs/MAME_KLUDGES.md`).
 
-**Follow MAME, including where MAME is wrong, and write down every place that is.** There is no
-PCB here. MAME is the accuracy target and its acknowledged guesses are inherited deliberately. Each
-goes in `docs/MAME_KLUDGES.md` when it is implemented, with what MAME does, what the hardware is
-suspected to do, and what would settle it.
+**Every approximation of this core's own goes in `docs/HACKS.md`** in the commit it lands.
 
-**Where a vendored module and MAME disagree, record it and keep the module.** A silicon-derived
-disagreement is evidence about the chip; MAME's is evidence about MAME. It goes in
-`docs/MAME_KLUDGES.md`, not into a "fix", until one side is shown to describe the chip.
+**The Voodoo draws into a frame buffer**, because the board has one: 2 MB of frame-buffer RAM
+(hornet.cpp:1419). It lives in DDR3 with the depth buffer; the scaler reads the front buffer.
 
-**Every approximation of this core's own goes in `docs/HACKS.md`** in the commit it lands, with
-what would make it correct. A hack that is not written down is a bug nobody will find.
-
-**Transcribe the reference literally first, then look for the chip.** Build MAME's version, get
-pixel-exact (or trace-exact) agreement with captured references, and only then experiment — with
-the experiment on an OSD switch so it is an A/B, not a rebuild.
-
-**One `.rbf` for all games.** Per-set differences are `.mra` mod-byte configuration.
-
-**Two Quartus revisions, `KonamiHornet_stp` and `KonamiHornet`,** differing only by a `DEBUG_ISSP` macro.
-See [`WORKFLOW.md`](WORKFLOW.md).
-
-**Licence: {{LICENCE}}.** Every dependency, what it obliges and the release checklist are in
-[`THIRD-PARTY.md`](../THIRD-PARTY.md). `sys/` is never edited.
-
-**Per-scanline rendering from buffered sprite RAM.** The default shape, as the boards worked:
-the list latched once a frame at the point the video-write sweep identifies, a per-scanline
-engine, a double-buffered line buffer. A frame buffer only where the driver shows the board had
-one; cite it here.
-
-**No multiplies, no divides, in 2D pipelines.** Shifts, masks, adds and accumulators; WORKFLOW §14.
-GPU-like chips (3D geometry, rasterisers) use multipliers by design, budgeted in DSP blocks.
-
-{{PROJECT_DECISIONS}}
-<!-- Clocking plan and the measurement it rests on; CPU integration choice; sprite rendering
-     shape (line-based, not frame-buffered, and why); which memory each large array lives in. -->
-
-## Pitfalls that already bind decisions here
-
-Entries from [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md) that are not general advice but already
-constrain something written above. Read the entry, not the summary.
-
-| Entry | What it binds here |
-|---|---|
-{{PITFALLS}}
+**The CPU cores are verified by instruction-trace diff against MAME before any bus work**, then by
+bus-access diff with device reads replayed from MAME.
 
 ## Phased roadmap
 
-<!-- Phase 0 is the gate: nothing after it starts until its exit criteria are met, and each
-     criterion is answered in place ("— Met: <evidence>" / "— Open: <what is missing>"). -->
+**Phase 0 — the three processors standalone, and the feasibility gate.**
 
-**Phase 0 — Vendoring spike and the measurements. The gate.**
+1. PPC403GA matches MAME's instruction trace through boot to the attract loop, device reads
+   replayed from MAME. — Open: 1,000,000 boot instructions match; device replay not built.
+2. PPC CPI measured on game code with a realistic memory model; the clock plan follows.
+3. SHARC core matches MAME's instruction trace on the geometry kernel. � Met for frames 3000 and
+   7500 (above); DMA timing and IRQ entry replayed from MAME's trace.
+4. Standalone Fmax and area for the PPC and the SHARC at this project's settings.
+5. Voodoo: licence answer for SpinalVoodoo, or a rasteriser plan; DDR3 throughput measured on
+   the board with a synthetic frame-buffer pattern.
 
-Vendor every reused module into `rtl/` with a `PROVENANCE.md` per directory. Run every upstream
-testbench unchanged before editing anything. Stand the CPU up in its own Quartus project
-(`rtl/synth_check/`) with the bus wrapper and the memory transport and nothing else.
-Exit criteria:
+Exit: the user decides, from 2-5, whether the board fits and at what scope.
 
-1. **Every vendored module's own tests pass unchanged, on arrival.**
-2. **The CPU boots the first target's program ROM and matches MAME's bus trace**, diffed access by
-   access, every peripheral stubbed to what MAME's returns.
-3. **Measured CPI on real game code** against the board's clock, split between execution and
-   memory stall.
-4. **Standalone Fmax and area for the CPU at this project's settings**, with the constraint that
-   proves it committed in the same commit as the measurement. This decides the clock plan.
-5. {{PHASE0_PROJECT_SPECIFIC_QUESTION}}
+**Phase 1 — The board in simulation.** PPC + SHARC + shared RAM + comm + K037122 + Voodoo in
+Verilator, reaching attract frames that match MAME's snapshots.
 
-**Phase 1 — Video, against a software model.**
+**Phase 2 — Hardware bring-up.** SDRAM/DDR3 map, ROM download, `.mra`, inputs, DIPs, NVRAM and
+the security EEPROM, the standard feature set. Silent.
 
-Build the MAME capture pipeline first (`mame_capture.py` + a `render_model.py` that reproduces the
-driver's video file), get it pixel-exact on captured frames, then check RTL against the model layer
-by layer. Exit criteria: the first target renders frames pixel-identical to MAME's for a captured
-set of scenes, silent, in simulation.
+**Phase 3 — Sound.** fx68k, K056800, RF5C400.
 
-**Phase 2 — Hardware bring-up and the first games.**
+**Phase 4 — nbapbp and the clones.** JVS for nbapbp.
 
-SDRAM backend with all clients, the ROM download path, `.mra` generation, inputs, DIPs, NVRAM,
-the ISSP probe and the OSD debug page. The standard feature set: CRT Adjust (and v-size if BRAM
-allows), hiscore, fast DDR ROM loading, HDMI scaling and crop, HDMI rotation, audio mix, HDMI-only
-options hidden under direct video, CRT Adjust parameters hidden until enabled, peripheral menus
-only for games that use them (rotary: Ikari Warriors controls; guns: mouse and synthetic
-crosshair), and flip screen from the OSD or the DIP (fake DIP where the
-game has none) through one path, worked out per layer for this board. Exit criteria: {{PHASE2_SETS}} boot and play on a
-DE10-nano, silent.
-
-**Phase 3 — Sound.**
-
-{{SOUND_PLAN}}. Exit criteria: register-write traces captured from MAME reproduce correct audio,
-by ear and by a decoded capture against MAME's output.
-
-**Phase 4 — The rest of the list, and accuracy.**
-
-The remaining sets, every clone's `.mra`, {{PHASE4_ITEMS}}. `docs/MAME_KLUDGES.md` and
-`docs/HACKS.md` are the deliverables that say what is still not right and what would settle it.
-
-**Phase 5 — {{OPTIONAL_SCOPE_EXTENSION}}.** A decision with evidence rather than a default.
-
-**Phase 6 — Savestates, state dumps and cheats.** Optional but desirable. Not before Phase 4, but
-the RTL is written for it from Phase 1 (the skill's `savestates.md`): reachable RAM ports, a
-`docs/STATE.md` inventory, addressable chip state. The state dump and its simulator loader are worth
-building before the savestate itself, because they make hardware bugs reproducible in a bench.
-
-## Verification strategy
-
-- **MAME is a reference generator, driven from scripts, not a thing to eyeball.** Boot traces, VRAM
-  and register dumps at known frames, palette dumps, register-write logs. WORKFLOW §9 applies.
-- **The software model comes before the RTL.** The model is checked against MAME first; the RTL
-  against the model.
-- **Every vendored module is verified against MAME before it is wired to anything**, and its own
-  testbench is the regression for every later change to it.
-- **Layouts are verified before ROMs are involved**: every `gfx_layout` gets the "every bit of a
-  tile exactly once" check.
-- **`.mra` files are generated, not written**, re-read byte-for-byte against an image built from
-  `ROM_START`, and gated on an XML well-formedness check before deploy.
-- **Worst cases are measured in the RTL**, not modelled: saturating counters with no reset port,
-  each paired with a total.
-
-## Repository setup
-
-Seeded from **MiSTer-devel/Template_MiSTer**, `Template.*` renamed to `KonamiHornet.*` and split into
-the `KonamiHornet_stp` and `KonamiHornet` revisions; the Quartus 13 project dropped. Quartus **17.0.2**.
-Conventions are in [`WORKFLOW.md`](WORKFLOW.md) and `CONVENTIONS.md`.
+**Phase 5 — Savestates.** Optional; state kept reachable from Phase 1 (`docs/STATE.md`).
 
 ## Open items
 
-{{OPEN_ITEMS}}
-<!-- One bold sentence each, then what is known, what is assumed, and what closes it. Strike
-     through when closed and say what closed it. -->
+**SpinalVoodoo has no licence (GitHub `license: null`).** User decision: the core uses it, and no
+binaries are released while it stays unlicensed. The repository stays private. A release needs the
+author's grant or a rasteriser written here.
+
+**The MAME binary (0.289) and the source read (mame0289-661) differ.** No 0.289-661 full build
+exists on this machine (`E:/mame/mame.exe` is a subtarget without Konami). The PPC, SHARC and
+Voodoo files are to be diffed between the two tags before a divergence is blamed on either.
 
 ## Next steps
 
-1. {{NEXT_STEP}}
-<!-- Numbered, in order, struck through as done with a pointer to the evidence. -->
+1. ~~MAME device-read capture and replay for the PPC bench.~~ Windows at frames 3000 and 7500.
+2. ~~Pipelined PPC.~~ 1.75 clocks per instruction; timing at 64 MHz re-checked once Quartus may run.
+3. ~~SHARC core against MAME's trace.~~ Frames 3000 and 7500 match.
+4. ~~SpinalVoodoo against MAME.~~ Texture-cache bugs fixed, MAME's 2x2 dither; the remaining
+   differences are accepted (HACKS).
+5. SHARC speed: 7.69/9.21 -> 1.45/2.05 clocks per instruction (windows 3000/7500). The peak
+   load needs about 33.5 M instructions a second (HARDWARE_NOTES "Feasibility"): 64 MHz at 2.05
+   gives 31 M. Open: the execute clock's Fmax (Quartus), then pipelining execute if it misses.
+6. Board integration in simulation (Phase 1): the in-game snapshot runs and its picture matches;
+   the attract snapshot falls a frame behind on Voodoo throughput (Progress). Decision needed:
+   the Voodoo at a faster clock of its own, or a faster SpinalVoodoo pixel pipeline
+   (HARDWARE_NOTES, Feasibility 3); parked (user decision). Booting: from a frame-140 snapshot
+   the PPC starts the SHARC at frame 152 (MAME 151), its EPROM boot runs, and the upload check
+   passes (the SHARC's 417 comm writes agree with MAME's, `scripts/mame_commlog.py`); pictures
+   match to frame 159. Next: the rest of the boot (serial port set-up at 222, sound handshake at
+   634, `scripts/mame_bootlog.py`).
