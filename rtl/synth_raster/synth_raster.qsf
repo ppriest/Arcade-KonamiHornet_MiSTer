@@ -1,0 +1,17 @@
+# vraster standalone area and Fmax (docs/RASTER.md):
+#     cd rtl/synth_raster && quartus_sh --flow compile synth_raster
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY vraster
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name SEARCH_PATH ../raster
+set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_dpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../raster/vraster.sv
+set_global_assignment -name SDC_FILE synth_raster.sdc
+set_parameter -name RECIP_HEX "../raster/vraster_recip.hex"
+set_instance_assignment -name VIRTUAL_PIN ON -to *
+set_instance_assignment -name VIRTUAL_PIN OFF -to clk
+set_instance_assignment -name VIRTUAL_PIN OFF -to reset
+
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"

@@ -72,7 +72,30 @@ module ppc403_core (
 // Architectural state
 // ---------------------------------------------------------------------------------------
 
-logic [31:0] gpr [32];
+// the GPRs: two MLAB banks, one a write port (port 1: results and loads; port 2: the update forms'
+// EA, in the same clock as a load), each read through five copies (the three operands, the
+// multiple/string register, the debug port); lvt says which bank holds a register's last value,
+// gz that it is still zero from reset. A write reaches the banks the clock after it is decided
+// (wr*), and a read sees the pending writes first, so a read is the register file's value as a
+// flip-flop file would have it.
+logic        wr1_en, wr2_en;
+logic [4:0]  wr1_idx, wr2_idx;
+logic [31:0] wr1_val, wr2_val;
+logic [31:0] lvt, gz;
+logic [4:0]  gr_a [5];                  // read addresses: operands a, b, s; mreg; debug
+logic [31:0] gr_1 [5], gr_2 [5];
+genvar gi;
+generate for (gi = 0; gi < 5; gi++) begin : g_gpr
+    sharc2_lutram #(.AW(5), .DW(32)) u_b1 (.clk, .we(wr1_en), .wa(wr1_idx), .wd(wr1_val), .ra(gr_a[gi]), .rd(gr_1[gi]));
+    sharc2_lutram #(.AW(5), .DW(32)) u_b2 (.clk, .we(wr2_en), .wa(wr2_idx), .wd(wr2_val), .ra(gr_a[gi]), .rd(gr_2[gi]));
+end endgenerate
+function automatic logic [31:0] gpr_rd(input int p);
+    logic [4:0] r;
+    r = gr_a[p];
+    if (wr2_en && wr2_idx == r) return wr2_val;
+    if (wr1_en && wr1_idx == r) return wr1_val;
+    return gz[r] ? 32'h0 : lvt[r] ? gr_2[p] : gr_1[p];
+endfunction
 logic [31:0] cr, lr, ctr, msr;
 logic [31:0] xer;            // SO in bit 31 as the architecture has it
 
@@ -166,7 +189,11 @@ always_ff @(posedge clk) if (ce) mul_p <= $signed(mul_a) * $signed(mul_b);
 wire x_ready  = (xstate == X_IDLE);
 // MAME gates every interrupt on MSR[EE] (ppcdrc.cpp:805-811)
 wire irq_take = x_ready && xin_valid && irq_pending && msr[15];
-wire x_start  = x_ready && xin_valid && !irq_take;
+// a store under write protection (MSR[PE]) waits a clock: its bound test is registered first
+// (pchk, prot_q), so that the test is not in the bus request's path (the game never sets PE)
+logic pchk, prot_q;
+wire  pchk_hold;
+wire x_start  = x_ready && xin_valid && !irq_take && !pchk_hold;
 
 // ---------------------------------------------------------------------------------------
 // Instruction fields: the instruction starting, or the one a busy state holds
@@ -192,10 +219,9 @@ wire [2:0]  crfd  = ir[25:23];
 wire [2:0]  crfs  = ir[20:18];
 wire [9:0]  sprn  = {ir[15:11], ir[20:16]};
 
-wire [31:0] va    = gpr[ra];
+// the head's operands, read from the register file a clock early (the sequential block below)
+logic [31:0] va, vb, vs;
 wire [31:0] va0   = (ra == 5'd0) ? 32'h0 : va;
-wire [31:0] vb    = gpr[rb];
-wire [31:0] vs    = gpr[rd];
 
 wire        so    = xer[31];
 wire        ca    = xer[29];
@@ -254,11 +280,20 @@ function automatic logic [31:0] bswap(input logic [31:0] v, input logic [1:0] sz
     bswap = (sz == 2'd1) ? {16'h0, v[7:0], v[15:8]} : {v[7:0], v[15:8], v[23:16], v[31:24]};
 endfunction
 
-// 4xx write protection (ppccom.cpp:1336-1344): 1 = the write faults
-function automatic logic prot_fault(input logic [31:0] a);
+// 4xx write protection (ppccom.cpp:1336-1344): 1 = the write faults. The address is base + off
+// (mod 2^32); each bound test is the sign of one three-operand add beside the address's own, not a
+// compare after it
+function automatic logic ea_ge(input logic [31:0] base, input logic [31:0] off, input logic [19:0] page);
+    logic [33:0] t;
+    logic        ovf;
+    t = {2'b0, base} + {2'b0, off} - {2'b0, page, 12'h0};
+    ovf = ({1'b0, base} + {1'b0, off}) >> 32 != 33'h0;
+    ea_ge = ovf ? (t[33:32] == 2'b01) : !t[33];
+endfunction
+function automatic logic prot_fault(input logic [31:0] base, input logic [31:0] off);
     logic in1, in2;
-    in1 = (a[31:12] >= pbl1[31:12]) && (a[31:12] < pbu1[31:12]);
-    in2 = (a[31:12] >= pbl2[31:12]) && (a[31:12] < pbu2[31:12]);
+    in1 = ea_ge(base, off, pbl1[31:12]) && !ea_ge(base, off, pbu1[31:12]);
+    in2 = ea_ge(base, off, pbl2[31:12]) && !ea_ge(base, off, pbu2[31:12]);
     prot_fault = msr[3] && (msr[2] ? (in1 || in2) : (!in1 && !in2));
 endfunction
 
@@ -443,16 +478,16 @@ wire [31:0] mfdcr_val = (sprn == 10'h040) ? exisr : (sprn == 10'h042) ? exier :
 // D-form and X-form loads/stores
 logic        ls_is, ls_st, ls_up, ls_sign, ls_rev, ls_resv;
 logic [1:0]  ls_sz;
-logic [31:0] ls_ea;
+logic [31:0] ls_ea, ls_base, ls_off;
 always_comb begin
     ls_is = 1'b0; ls_st = 1'b0; ls_up = 1'b0; ls_sign = 1'b0; ls_rev = 1'b0; ls_resv = 1'b0;
     ls_sz = 2'd2;
-    ls_ea = va0 + simm;
+    ls_base = va0; ls_off = simm;
     case (op)
     6'd32, 6'd33, 6'd34, 6'd35, 6'd40, 6'd41, 6'd42, 6'd43,
     6'd36, 6'd37, 6'd38, 6'd39, 6'd44, 6'd45: begin
         ls_is = 1'b1;
-        ls_ea = (op[0] ? va : va0) + simm;
+        ls_base = op[0] ? va : va0;
         ls_st = (op >= 6'd36 && op <= 6'd39) || op == 6'd44 || op == 6'd45;
         ls_up = op[0];
         ls_sign = (op == 6'd42 || op == 6'd43);
@@ -463,7 +498,7 @@ always_comb begin
         endcase
     end
     6'd31: begin
-        ls_ea = va0 + vb;
+        ls_off = vb;
         case (xo)
         10'd23, 10'd55, 10'd87, 10'd119, 10'd279, 10'd311, 10'd343, 10'd375,
         10'd151, 10'd183, 10'd215, 10'd247, 10'd407, 10'd439,
@@ -491,18 +526,45 @@ always_comb begin
 end
 
 wire ls_misal = (ls_sz == 2'd1 && ls_ea[0]) || (ls_sz == 2'd2 && ls_ea[1:0] != 0);
-wire ls_prot  = ls_st && prot_fault(ls_ea);
+assign ls_ea = ls_base + ls_off;
+// the head is a store: decoded a clock early from the next head (h_st, with the operands below), so
+// that the decode is not in the start's path
+function automatic logic is_store(input logic [31:0] w);
+    logic [5:0] o;
+    logic [9:0] x;
+    o = w[31:26]; x = w[10:1];
+    is_store = (o >= 6'd36 && o <= 6'd39) || o == 6'd44 || o == 6'd45 ||
+               (o == 6'd31 && (x == 10'd151 || x == 10'd183 || x == 10'd215 || x == 10'd247 ||
+                               x == 10'd407 || x == 10'd439 || x == 10'd662 || x == 10'd918 ||
+                               x == 10'd150));
+endfunction
+logic h_st;
+assign pchk_hold = h_st && msr[3] && !pchk;
+// synthesis translate_off
+always_ff @(posedge clk) if (xin_valid && h_st != (ls_is && ls_st))
+    $error("ppc403_core: h_st %0d, the head's decode %0d at %08x", h_st, ls_is && ls_st, pc);
+// synthesis translate_on
+wire ls_prot  = ls_st && msr[3] && prot_q;
+always_ff @(posedge clk)
+    if (reset) pchk <= 1'b0;
+    else if (ce) begin
+        if (x_start || irq_take) pchk <= 1'b0;
+        else if (x_ready && xin_valid && pchk_hold) begin pchk <= 1'b1; prot_q <= prot_fault(ls_base, ls_off); end
+    end
 wire ls_skip  = ls_resv && ls_st && !reserve;          // stwcx. without a reservation
 wire ls_go    = x_start && ls_is && !ls_misal && !ls_prot && !ls_skip;
 
 // the multiple/string/dcbz sequences issue from registers
+logic [31:0] gm;                        // GPR mreg
+assign gr_a[3] = mreg;
+assign gm = gpr_rd(3);
 logic [31:0] mseq_wdata;
 logic [3:0]  mseq_be;
 always_comb begin
     case (mop)
-    M_LSW, M_STSW: begin mseq_be = 4'b1000 >> mea[1:0]; mseq_wdata = {4{gpr[mreg][31 - 8*mbyte -: 8]}}; end
+    M_LSW, M_STSW: begin mseq_be = 4'b1000 >> mea[1:0]; mseq_wdata = {4{gm[31 - 8*mbyte -: 8]}}; end
     M_DCBZ:        begin mseq_be = 4'b1111; mseq_wdata = 32'h0; end
-    default:       begin mseq_be = 4'b1111; mseq_wdata = gpr[mreg]; end
+    default:       begin mseq_be = 4'b1111; mseq_wdata = gm; end
     endcase
 end
 
@@ -556,7 +618,7 @@ always_comb begin
     6'd34:   dbg_val = ctr;
     6'd35:   dbg_val = xer;
     6'd36:   dbg_val = msr;
-    default: dbg_val = gpr[dbg_sel[4:0]];
+    default: dbg_val = gpr_rd(4);
     endcase
 end
 
@@ -588,6 +650,22 @@ endtask
 logic        w1_en, w2_en;
 logic [4:0]  w1_idx, w2_idx;
 logic [31:0] w1_val, w2_val;
+logic [31:0] nh;             // the head instruction at the next clock
+// the queue's next head, without the redirect (it empties the queue: a wrong guess is unused)
+always_comb begin
+    nh = q_ir[0];
+    if (ce) begin
+        if (q_pop) nh = q_ir[1];
+        if (f_ack_ok && (q_n == 2'd0 || (q_n == 2'd1 && q_pop))) nh = i_rdata;
+    end
+end
+assign gr_a[0] = nh[20:16];
+assign gr_a[1] = nh[15:11];
+assign gr_a[2] = nh[25:21];
+assign gr_a[4] = dbg_sel[4:0];
+logic [31:0] o_v [3];        // its operands a, b, s (below)
+logic [2:0]  o_s1, o_s2;
+logic [31:0] w1_q, w2_q;
 
 always_ff @(posedge clk) begin
     // external interrupt lines: edge-set, level-mirror (ppccom.cpp:2539-2572)
@@ -618,7 +696,6 @@ always_ff @(posedge clk) begin
 
     w1_en = 1'b0; w1_idx = rd; w1_val = 32'h0;
     w2_en = 1'b0; w2_idx = ra; w2_val = 32'h0;
-
     if (reset) begin
         xstate   <= X_IDLE;
         fetch_pc <= 32'hFFFF_FFFC;
@@ -636,7 +713,7 @@ always_ff @(posedge clk) begin
         reserve  <= 1'b0;
         irqstate <= 5'h0;
         cr <= 32'h0; lr <= 32'h0; ctr <= 32'h0; xer <= 32'h0;
-        for (int i = 0; i < 32; i++) gpr[i] <= 32'h0;
+        gz <= '1;
     end else if (ce) begin
         logic        redirect;
         logic [31:0] target;
@@ -953,7 +1030,7 @@ always_ff @(posedge clk) begin
                     logic [7:0]  b;
                     logic [31:0] r;
                     b = d_rdata[31 - 8*mea[1:0] -: 8];
-                    r = gpr[mreg];
+                    r = gm;
                     // MAME: the first byte clears the register (ppcdrc.cpp:1675)
                     if (mbyte == 2'd0) r = {b, 24'h0};
                     else r[31 - 8*mbyte -: 8] = b;
@@ -977,8 +1054,6 @@ always_ff @(posedge clk) begin
         default: ;
         endcase
 
-        if (w1_en) gpr[w1_idx] <= w1_val;
-        if (w2_en) gpr[w2_idx] <= w2_val;
 
         // ---------------------------------------------------------------- fetch
         if (redirect) begin
@@ -1042,9 +1117,41 @@ always_ff @(posedge clk) begin
         6'd52: begin pit_spr <= dbg_wdata; pit_reload <= dbg_wdata; end
         6'd53: pit_count <= {1'b0, dbg_wdata};
         6'd54: irqstate <= dbg_wdata[4:0];
-        default: if (dbg_wsel < 6'd32) gpr[dbg_wsel[4:0]] <= dbg_wdata;
+        default: ;                      // GPRs: below, through write port 1
         endcase
     end
+
+    // the next head's operands as the register file holds them after this clock's writes: the
+    // register file's value (o_v) and which of this clock's write ports replaces it (o_s1, o_s2),
+    // resolved next clock from the ports' values (w1_q, w2_q), so that the late write values do
+    // not pass through the operand muxes
+    begin
+        logic [4:0]  r [3];
+        r[0] = nh[20:16]; r[1] = nh[15:11]; r[2] = nh[25:21];
+        for (int k = 0; k < 3; k++) begin
+            o_v[k] <= (dbg_we && dbg_wsel == {1'b0, r[k]}) ? dbg_wdata : gpr_rd(k);
+            o_s1[k] <= w1_en && w1_idx == r[k] && !reset;
+            o_s2[k] <= w2_en && w2_idx == r[k] && !reset;
+            if (reset) o_v[k] <= 32'h0;
+        end
+        w1_q <= w1_val; w2_q <= w2_val;
+        h_st <= is_store(nh) && !reset;
+    end
+
+    // the GPR writes of this clock to the banks next clock; the pending ones into lvt and gz now
+    if (wr1_en) begin lvt[wr1_idx] <= 1'b0; gz[wr1_idx] <= 1'b0; end
+    if (wr2_en) begin lvt[wr2_idx] <= 1'b1; gz[wr2_idx] <= 1'b0; end
+    wr1_en <= w1_en || (dbg_we && dbg_wsel < 6'd32);
+    wr1_idx <= (dbg_we && dbg_wsel < 6'd32) ? dbg_wsel[4:0] : w1_idx;
+    wr1_val <= (dbg_we && dbg_wsel < 6'd32) ? dbg_wdata : w1_val;
+    wr2_en <= w2_en; wr2_idx <= w2_idx; wr2_val <= w2_val;
+    if (reset) begin wr1_en <= 1'b0; wr2_en <= 1'b0; gz <= '1; end
+end
+
+always_comb begin
+    logic [31:0] o [3];
+    for (int k = 0; k < 3; k++) o[k] = o_s2[k] ? w2_q : o_s1[k] ? w1_q : o_v[k];
+    va = o[0]; vb = o[1]; vs = o[2];
 end
 
 endmodule

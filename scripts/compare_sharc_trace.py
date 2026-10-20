@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Diff sim/sharc_tb's trace against MAME's for a SHARC window.
 
-    python scripts/compare_sharc_trace.py debug/gradius4-sharc3000 [--context 4]
+    python scripts/compare_sharc_trace.py debug/gradius4-sharc3000 [--context 4] [--rtl rtl2.tr]
 
 Both files: R0-15 I0-15 M0-15 ASTAT MODE1 IRPTL IMASK PCSTKP LSTKP CURLCNTR PCSTK, then
 `PC: ...`, the state before each instruction. Reports the first PC or register divergence.
@@ -33,9 +33,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir")
     ap.add_argument("--context", type=int, default=4)
+    ap.add_argument("--rtl", default="rtl.tr", help="the bench's trace in the window (sharc2_tb: rtl2.tr)")
     a = ap.parse_args()
     d = Path(a.dir)
-    rtl = load(d / "rtl.tr", 10**9)
+    rtl = load(d / a.rtl, 10**9)
     mame = load(d / "trace.tr", len(rtl))
     n = min(len(rtl), len(mame))
     for i in range(n):

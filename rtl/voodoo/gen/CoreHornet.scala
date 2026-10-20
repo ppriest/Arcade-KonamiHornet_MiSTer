@@ -72,3 +72,23 @@ case class CoreHornet(c: Config) extends Component {
 object CoreHornetGen extends App {
   GenSupport.de10Verilog(args(0)).generate(CoreHornet(Config.voodoo1()))
 }
+
+// Gradius IV's subset (HARDWARE_NOTES, Voodoo usage): no fog; a 512x384 frame. Area experiments:
+//   --tex-slots N   texture fill cache slots (default 16)
+//   --no-fb-cache   no framebuffer read cache
+//   --fixed-lod     LOD from tLOD's clamp only (lodmin = lodmax)
+//   --formats a,b   texel formats decoded (Tmu.TextureFormat numbers)
+object CoreHornetTrimGen extends App {
+  def arg(name: String): Option[String] = args.indexOf(name) match {
+    case -1 => None
+    case i  => Some(args(i + 1))
+  }
+  val c = Config.voodoo1().copy(
+    enableFog = false,
+    maxFbDims = (512, 384),
+    texFillCacheSlots = arg("--tex-slots").map(_.toInt).getOrElse(16),
+    useFbReadCache = !args.contains("--no-fb-cache"),
+    fixedLod = args.contains("--fixed-lod"),
+    texFormats = arg("--formats").map(_.split(",").toSeq.map(_.toInt)).getOrElse(Nil))
+  GenSupport.de10Verilog(args(0)).generate(CoreHornet(c))
+}

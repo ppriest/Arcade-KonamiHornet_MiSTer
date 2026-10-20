@@ -1,0 +1,2 @@
+rtl/board/hornet_rtc.sv
+sim/rtc_tb/tb_rtc.sv

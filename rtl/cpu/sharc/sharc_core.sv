@@ -198,6 +198,10 @@ typedef struct packed {
 } acc_t;
 
 acc_t acc [2];
+// P_EXEC's result (the always_comb below the sequencer)
+st_t        ex_s;
+acc_t       ex_a [2];
+logic [1:0] ex_n;
 logic [1:0]  acc_n;               // number queued
 logic [0:0]  acc_cur;
 logic [47:0] acc_rdata [2];
@@ -413,9 +417,6 @@ always_comb begin
 end
 
 // P_EXEC's work: execute_run's per-instruction sequencing and the opcode handler, on pm_q
-st_t        ex_s;
-acc_t       ex_a [2];
-logic [1:0] ex_n;
 always_comb begin
     st_t s;
     acc_t a [2];

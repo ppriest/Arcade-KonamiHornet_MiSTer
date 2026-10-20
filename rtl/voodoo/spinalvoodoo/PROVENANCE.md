@@ -20,6 +20,10 @@
     row guess outside the triangle. Found and checked by the Hyper NeoGeo 64 core (10,179
     triangles against an exact edge-function model: 5 with an extra pixel before, 0 after; its
     rtl/3d/PROVENANCE.md). Here frames 2150 and 7500 are unchanged (the path is not taken).
+  - `0004-game-subset-options.patch`: `Config` options `fixedLod` (LOD from tLOD's clamp, for a
+    game that keeps lodmin = lodmax) and `texFormats` (the texel formats decoded), both off by
+    default. Used only by `hornet.CoreHornetTrimGen` for area measurements so far (HARDWARE_NOTES,
+    Feasibility 5); the vendored `CoreHornet.v` does not use them.
 - `CoreHornet.v` (and its `CoreHornet.v_*.bin`): the same sources and patches, generated with
   `--main-class hornet.CoreHornetGen` from `rtl/voodoo/gen/CoreHornet.scala`: vertical retrace
   from the board, the displayed buffer's base out, SpinalVoodoo's HDMI scanout held in reset.

@@ -1,0 +1,22 @@
+# SHARC v2 standalone area and Fmax (docs/SHARC_V2.md):
+#     cd rtl/synth_sharc && quartus_sh --flow compile synth_sharc
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY synth_top
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS ALL
+set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"
+set_global_assignment -name SEED 0
+set_global_assignment -name SEARCH_PATH ../cpu/sharc2
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc/sharc_fp_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc2/sharc2_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc2/sharc_fadd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc2/sharc_fmul.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc2/sharc2_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_dpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc2/sharc2_lutram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/sharc2/sharc2_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE synth_top.sv
+set_global_assignment -name SDC_FILE synth_sharc.sdc
+
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"

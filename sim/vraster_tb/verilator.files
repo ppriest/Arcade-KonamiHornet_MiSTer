@@ -1,0 +1,6 @@
+-Irtl/raster
+rtl/board/hornet_dpram.sv
+rtl/board/hornet_sdpram.sv
+rtl/cpu/sharc2/sharc2_lutram.sv
+rtl/raster/vraster.sv
+sim/vraster_tb/tb_vraster.sv

@@ -24,14 +24,18 @@ def main():
     ap.add_argument("--nodrc", action="store_true", help="interpreters, as the snapshots run")
     ap.add_argument("--nvram", default=str(REPO / "debug" / "nvram"))
     ap.add_argument("--events", default="")
+    ap.add_argument("--cfg", default="", help="a <set>.cfg to start from (DIP settings)")
+    ap.add_argument("--name", default="bootlog", help="output folder suffix")
     a = ap.parse_args()
 
     mame_dir, exe = mame_paths()
-    out = REPO / "debug" / f"{a.game}-bootlog"
+    out = REPO / "debug" / f"{a.game}-{a.name}"
     out.mkdir(parents=True, exist_ok=True)
     for c in out.iterdir():
         shutil.rmtree(c) if c.is_dir() else c.unlink()
     (out / "cfg").mkdir()
+    if a.cfg:
+        shutil.copy(a.cfg, out / "cfg" / f"{a.game}.cfg")
     if Path(a.nvram).exists():
         shutil.copytree(Path(a.nvram), out / "nvram")
     env = dict(os.environ, CORE_OUT=out.as_posix(), CORE_FRAMES=str(a.to), CORE_EVENTS=a.events,

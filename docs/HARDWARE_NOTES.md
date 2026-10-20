@@ -192,5 +192,34 @@ Open. What the measurements above require, and what closes each:
    author's DE10 build runs at 50 MHz (hw/de10/qsys/create_de10_core_pll.tcl). At 64 MHz the
    board falls a frame behind in attract (`sim/board_tb`, ROADMAP Progress).
 4. **Voodoo RTL**: SpinalVoodoo's licence, or the cost of writing the rasteriser.
-5. **Area**: three cores of this size on a 5CSEBA6 (41,910 ALMs, 553 M10K, 112 DSP) with the
-   framework. Closed by the standalone syntheses of 1-3.
+5. **Area**: three cores of this size on a 5CSEBA6 (41,910 ALMs = 83,820 ALUTs, 553 M10K =
+   5.66 Mbit, 112 DSP) with the framework. Whole-board synthesis (`rtl/synth_board`, Quartus
+   17.0.2, no `sys/`): 253,486 ALUTs, 105,501 registers, 4.81 Mbit, 99 DSP; three times the ALUTs.
+
+   | Block | ALUTs | Registers | Block bits | DSP |
+   |---|---|---|---|---|
+   | SHARC (`sharc_core`) | 176,409 | 9,461 | 2,031,616 | 34 |
+   | Voodoo (`CoreHornet`) | 46,848 | 46,249 | 610,864 | 62 |
+   | Video (`hornet_video`) | 15,354 | 36,001 | 0 | 0 |
+   | PPC (`ppc403_core`) | 8,250 | 2,830 | 0 | 3 |
+   | Board glue and RAMs | 4,949 | 10,786 | 2,162,688 | 0 |
+
+   The SHARC is the transcription of MAME's interpreter: the whole instruction in one
+   combinational clock over a copied state struct. The video's line buffers and the board's
+   K033906 RAM and K037122 registers were built as registers. Fmax not measured (no fit).
+
+   Fits since (5CSEBA6, Quartus 17.0.2, 64 MHz constraint):
+
+   | Block | ALMs | Registers | DSP | Fmax | Source |
+   |---|---|---|---|---|---|
+   | SHARC v2 (`rtl/synth_sharc`, commit 91bf000) | 33,984 | 13,201 | 5 | 29 MHz | docs/SHARC_V2.md |
+   | Voodoo, Gradius IV subset (patch 0004 options) | 26,489 | 38,031 | 46 | 55 MHz | below |
+   | PPC (`ppc403_core`) | 5,896 | 2,920 | 3 | 64.2 MHz | Konami M2 session's fit |
+   | sys/ (sibling cores: Seta 20,885 - 14,137, Fuuki 16,446 - 9,545) | ~6,800 | | | | fit reports |
+
+   The Voodoo subset (`hornet.CoreHornetTrimGen --no-fb-cache --fixed-lod --formats 0,10,12`:
+   no fog, 512x384, no framebuffer read cache, LOD from tLOD's clamp, RGB332/RGB565/ARGB4444)
+   takes the standalone map from 43,587 to 38,786 ALUTs; the rest is machinery the game uses
+   (TMU 8.6k own ALUTs, TriangleSetup 6.4k, SpanWalker 6.3k, texture cache 5.1k, register bank
+   4.2k with 9.5k registers). Voodoo + PPC is 32.4k ALMs of the ~35.1k the board can have beside
+   sys/, before the SHARC, video and glue: the board does not fit the device as built.

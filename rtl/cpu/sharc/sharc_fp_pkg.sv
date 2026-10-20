@@ -445,10 +445,11 @@ endfunction
 // rather than floorf (compute.hxx:1594-1601 against 1065-1072)
 function automatic fres_t f_fix(input logic [31:0] x, input logic scaled, input logic [31:0] ry,
                                 input logic trunc, input logic multi);
-    fres_t o;
+    fres_t o, sc;
     logic [31:0] v;
     o = '0;
-    v = scaled ? scalb(x, ry).r : x;
+    sc = scalb(x, ry);
+    v = scaled ? sc.r : x;
     o.r = f2i(v, trunc ? (multi ? 2'd2 : 2'd1) : 2'd0);
     if (o.r[31]) o.astat |= AN;
     if (o.r == 0) o.astat |= AZ;
@@ -461,10 +462,11 @@ endfunction
 // FLOAT Rx [BY Ry]. The flags differ between the forms (compute.hxx:1119-1155, 1555-1579)
 function automatic fres_t f_float(input logic [31:0] rx, input logic scaled, input logic [31:0] ry,
                                   input logic multi);
-    fres_t o;
+    fres_t o, sc;
     o = '0;
     o.r = i2f(rx);
-    if (scaled) o.r = scalb(o.r, ry).r;
+    sc = scalb(o.r, ry);
+    if (scaled) o.r = sc.r;
     if (multi) begin
         if (f_lt(o.r, 32'h0)) o.astat |= AN;
     end else begin

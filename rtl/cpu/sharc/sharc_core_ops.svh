@@ -701,17 +701,30 @@ task automatic jump_to(inout st_t s, input logic j, input logic [31:0] addr);
     if (j) change_pc_delayed(s, addr); else change_pc(s, addr);
 endtask
 
+// The fields compute writes, taken from the shared compute's result
+task automatic apply_compute(inout st_t s, input st_t sc);
+    s.r = sc.r; s.mrf = sc.mrf; s.mrb = sc.mrb; s.astat = sc.astat; s.stky = sc.stky;
+endtask
+
 task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2],
                           inout logic [1:0] n);
     logic [4:0]  cond;
     logic [22:0] comp;
     logic [2:0]  dmi, dmm, pmi, pmm, i, m;
     logic        j, e, ci, la;
+    st_t         sc;
     cond = op[37:33];
     comp = op[22:0];
     dmi = op[43:41]; dmm = op[40:38]; pmi = op[32:30]; pmm = op[29:27];
     i = op[43:41]; m = op[40:38];
     j = op[26]; e = op[25]; ci = op[24]; la = op[38];
+
+    // One compute unit: every form computes on the state it starts with, except the indirect
+    // jumps with CI, which clear the interrupt (and may pop the status stack) first. Each form
+    // below applies the result where MAME's handler calls compute.
+    sc = s;
+    if ((op[47:39] == 9'b000010000 || op[47:39] == 9'b000010010) && ci) clear_int(sc);
+    if (comp != 0) compute(sc, comp);
 
     casez (op[47:39])
     // compute / dreg <-> DM / dreg <-> PM
@@ -720,14 +733,14 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
         logic [31:0] pv, dv;
         pmd_r = op[26:23]; dmd_r = op[36:33];
         pv = s.r[pmd_r]; dv = s.r[dmd_r];
-        if (comp != 0) compute(s, comp);
+        if (comp != 0) apply_compute(s, sc);
         if (op[37]) q_acc(a, n, A_PM_WR32, s.i2[pmi], {pv, 16'h0}, 2'd3, 8'h0, 1'b1, 1'b1, pmi, s.m2[pmm]);
         else        q_acc(a, n, A_PM_RD32, s.i2[pmi], 48'h0, 2'd0, {4'h0, pmd_r}, 1'b1, 1'b1, pmi, s.m2[pmm]);
         if (op[44]) q_acc(a, n, A_DM_WR, s.i1[dmi], {16'h0, dv}, 2'd3, 8'h0, 1'b1, 1'b0, dmi, s.m1[dmm]);
         else        q_acc(a, n, A_DM_RD, s.i1[dmi], 48'h0, 2'd0, {4'h0, dmd_r}, 1'b1, 1'b0, dmi, s.m1[dmm]);
     end
     // compute
-    9'b000000010, 9'b000000011: if (if_cond(s, cond) && comp != 0) compute(s, comp);
+    9'b000000010, 9'b000000011: if (if_cond(s, cond) && comp != 0) apply_compute(s, sc);
     // compute / ureg <-> DM|PM, pre-modify (0) or post-modify (1)
     9'b0100?????, 9'b0101?????: begin
         logic g, d, post;
@@ -736,7 +749,7 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
         g = op[32]; d = op[31]; u = op[30:23]; post = op[44];
         if (if_cond(s, op[37:33])) begin
             uv = get_ureg(s, u);
-            if (comp != 0) compute(s, comp);
+            if (comp != 0) apply_compute(s, sc);
             mv = g ? s.m2[m] : s.m1[m];
             ad = (g ? s.i2[i] : s.i1[i]) + (post ? 32'h0 : mv);
             if (g) begin
@@ -759,7 +772,7 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
         mv = sext6(op[32:27]);
         dv = s.r[dr];
         if (if_cond(s, cond)) begin
-            if (comp != 0) compute(s, comp);
+            if (comp != 0) apply_compute(s, sc);
             ad = (g ? s.i2[i] : s.i1[i]) + (u ? 32'h0 : mv);
             if (g) begin
                 if (d) q_acc(a, n, A_PM_WR32, ad, {dv, 16'h0}, 2'd3, 8'h0, u, 1'b1, i, mv);
@@ -774,7 +787,7 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
     9'b0111?????: if (if_cond(s, op[35:31])) begin
         logic [31:0] v;
         v = get_ureg(s, op[43:36]);
-        if (comp != 0) compute(s, comp);
+        if (comp != 0) apply_compute(s, sc);
         set_ureg(s, op[30:23], v);
     end
     // immediate shift / dreg <-> DM|PM
@@ -803,7 +816,7 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
         shift_op(s, op[21:16], {20'h0, op[30:27], op[15:8]}, 1'b1, op[7:4], op[3:0]);
     // compute / modify
     9'b000001000, 9'b000001001: if (if_cond(s, cond)) begin
-        if (comp != 0) compute(s, comp);
+        if (comp != 0) apply_compute(s, sc);
         post_modify(s, op[38], op[32:30], op[38] ? s.m2[op[29:27]] : s.m1[op[29:27]]);
     end
     // direct jump / call, absolute (0x0600, 0x0680)
@@ -837,9 +850,9 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
             if (if_cond(s, cond)) begin
                 if (la) begin logic [31:0] v; pop_pc(s, v); pop_loop(s); end
                 jump_to(s, j, t);
-            end else if (comp != 0) compute(s, comp);
+            end else if (comp != 0) apply_compute(s, sc);
         end else if (if_cond(s, cond)) begin
-            if (comp != 0) compute(s, comp);
+            if (comp != 0) apply_compute(s, sc);
             if (la) begin logic [31:0] v; pop_pc(s, v); pop_loop(s); end
             jump_to(s, j, t);
         end
@@ -852,9 +865,9 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
                 push_pc(s);
                 s.pcstk = j ? s.nfaddr : s.daddr;
                 jump_to(s, j, t);
-            end else if (comp != 0) compute(s, comp);
+            end else if (comp != 0) apply_compute(s, sc);
         end else if (if_cond(s, cond)) begin
-            if (comp != 0) compute(s, comp);
+            if (comp != 0) apply_compute(s, sc);
             push_pc(s);
             s.pcstk = j ? s.nfaddr : s.daddr;
             jump_to(s, j, t);
@@ -868,7 +881,7 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
         if (if_cond(s, cond)) change_pc(s, op[45] ? s.pc + sext6(op[32:27]) : s.i2[pmi] + s.m2[pmm]);
         else begin
             dv = s.r[dr];
-            if (comp != 0) compute(s, comp);
+            if (comp != 0) apply_compute(s, sc);
             if (op[44]) q_acc(a, n, A_DM_WR, s.i1[dmi], {16'h0, dv}, 2'd3, 8'h0, 1'b1, 1'b0, dmi, s.m1[dmm]);
             else        q_acc(a, n, A_DM_RD, s.i1[dmi], 48'h0, 2'd0, {4'h0, dr}, 1'b1, 1'b0, dmi, s.m1[dmm]);
         end
@@ -881,9 +894,9 @@ task automatic execute_op(inout st_t s, input logic [47:0] op, inout acc_t a [2]
         if (rti) s.irptl = s.irptl & ~(32'h1 << s.active_irq_num[4:0]);
         if (e) begin
             if (if_cond(s, cond)) begin pop_pc(s, v); jump_to(s, j, v); end
-            else if (comp != 0) compute(s, comp);
+            else if (comp != 0) apply_compute(s, sc);
         end else if (if_cond(s, cond)) begin
-            if (comp != 0) compute(s, comp);
+            if (comp != 0) apply_compute(s, sc);
             pop_pc(s, v); jump_to(s, j, v);
         end
         if (rti) begin

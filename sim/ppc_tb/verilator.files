@@ -1,2 +1,3 @@
+rtl/cpu/sharc2/sharc2_lutram.sv
 rtl/cpu/ppc403/ppc403_core.sv
 sim/ppc_tb/tb_ppc.sv

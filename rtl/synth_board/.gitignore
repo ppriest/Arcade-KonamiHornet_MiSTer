@@ -1,0 +1,6 @@
+db/
+incremental_db/
+output_files/
+*.log
+worst_*.txt
+CoreHornet.v_*.bin

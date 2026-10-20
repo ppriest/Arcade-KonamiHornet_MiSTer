@@ -1,0 +1,10 @@
+base         core ALUTs 34012 (own 24808)  alu 9072
+no_swap      core ALUTs 32132 (own 22773)  alu 9227
+no_dmae      core ALUTs 31668 (own 22457)  alu 9079
+no_step      core ALUTs 30702 (own 21460)  alu 9110
+no_loopend   core ALUTs 33542 (own 24322)  alu 9088
+no_fsirq     core ALUTs 33739 (own 24533)  alu 9074
+no_fuse      core ALUTs 32691 (own 23547)  alu 9012
+no_handler   core ALUTs 4300 (own 4188)  alu 12
+no_iopw      core ALUTs 32259 (own 23050)  alu 9077
+no_getureg   core ALUTs 32557 (own 23366)  alu 9059

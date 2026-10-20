@@ -1,0 +1,1037 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// vraster's triangles: MAME's poly.h render_triangle spans (vertices sorted by y, scanlines
+// sampled at y + 0.5, ends rounded by round_coordinate) and voodoo_render.cpp's rasterizer per
+// span.
+//
+// Approximations (docs/HACKS.md): slopes in fixed point (MAME uses float), iterated R/G/B taken
+// as zero (the game never writes them; their registers stay 0), no Z iteration (W-buffer only).
+
+// ---------------------------------------------------------------- per-pixel stages (MAME)
+
+function automatic logic [7:0] pclamp8(input logic [11:0] v);    // clamped_argb's pseudo-clamp
+    if (v == 12'hFFF) return 8'h00;
+    if (v == 12'h100) return 8'hFF;
+    return v[7:0];
+endfunction
+
+function automatic logic [7:0] sat8(input logic signed [17:0] v);
+    return (v < 0) ? 8'h00 : (v > 18'sd255) ? 8'hFF : v[7:0];
+endfunction
+
+function automatic logic [23:0] rgb565_888(input logic [15:0] p);
+    return {p[15:11], p[15:13], p[10:5], p[10:9], p[4:0], p[4:2]};
+endfunction
+
+// a pixel's colour (MAME combine_color, chroma key, alpha test): the clamped iterated A and the
+// texel (ARGB); whether the pixel survives, and its A R G B
+typedef struct packed {
+    logic        pass;
+    logic [31:0] c;                // A R G B
+} pc_t;
+// in two clocks: pix_sel, the selects (blend colour, factor, add, chroma key); pix_comb, the
+// scale, add, clamp and alpha test
+typedef struct packed {
+    logic        pass;                                 // the chroma key passes
+    logic [3:0][9:0] bc;                               // blend colour (signed), A R G B
+    logic [3:0][8:0] bfac;                             // blend factor
+    logic [3:0][7:0] av;                               // the add
+} ps_t;
+function automatic ps_t pix_sel(input logic [7:0] ia, input logic [31:0] texel);
+    ps_t o;
+    logic [7:0]  oc [4], lc [4], tx [4], c1 [4], c0 [4], bf [4], av [4], it [4];
+    logic signed [9:0] bc [4];
+    logic [8:0]  bfac [4];
+    o.pass = 1'b1;
+    it = '{ia, 8'h00, 8'h00, 8'h00};                    // iterated RGB is 0 (header)
+    tx = '{texel[31:24], texel[23:16], texel[15:8], texel[7:0]};
+    c1 = '{color1[31:24], color1[23:16], color1[15:8], color1[7:0]};
+    c0 = '{color0[31:24], color0[23:16], color0[15:8], color0[7:0]};
+    // c_other (rgbselect, aselect); chroma key on its RGB
+    for (int k = 1; k < 4; k++)
+        case (fbzColorPath[1:0]) 2'd0: oc[k] = it[k]; 2'd1: oc[k] = tx[k]; 2'd2: oc[k] = c1[k]; default: oc[k] = 8'h0; endcase
+    if (fbzMode[1] && {oc[1], oc[2], oc[3]} == chromaKey[23:0]) o.pass = 1'b0;
+    case (fbzColorPath[3:2]) 2'd0: oc[0] = it[0]; 2'd1: oc[0] = tx[0]; 2'd2: oc[0] = c1[0]; default: oc[0] = 8'h0; endcase
+    // c_local (localselect, its override, cca_localselect)
+    for (int k = 1; k < 4; k++)
+        lc[k] = (fbzColorPath[7] ? tx[0][7] : fbzColorPath[4]) ? c0[k] : it[k];
+    case (fbzColorPath[6:5]) 2'd1: lc[0] = c0[0]; default: lc[0] = it[0]; endcase   // 2, 3: Z/W unused
+    // blend colour: zero other, subtract local
+    for (int k = 0; k < 4; k++) begin
+        logic zo, sub;
+        zo = (k == 0) ? fbzColorPath[17] : fbzColorPath[8];
+        sub = (k == 0) ? fbzColorPath[18] : fbzColorPath[9];
+        bc[k] = (zo ? 10'sd0 : $signed({2'b0, oc[k]})) - (sub ? $signed({2'b0, lc[k]}) : 10'sd0);
+    end
+    // blend factor (mselect), reversed unless the reverse bit
+    for (int k = 1; k < 4; k++)
+        case (fbzColorPath[12:10])
+        3'd1: bf[k] = lc[k];
+        3'd2: bf[k] = oc[0];
+        3'd3: bf[k] = lc[0];
+        3'd4: bf[k] = tx[0];
+        default: bf[k] = 8'h0;
+        endcase
+    case (fbzColorPath[21:19])
+    3'd1, 3'd3: bf[0] = lc[0];
+    3'd2: bf[0] = oc[0];
+    3'd4: bf[0] = tx[0];
+    default: bf[0] = 8'h0;
+    endcase
+    for (int k = 0; k < 4; k++) begin
+        logic rev;
+        rev = (k == 0) ? fbzColorPath[22] : fbzColorPath[13];
+        bfac[k] = {1'b0, rev ? bf[k] : ~bf[k]} + 9'd1;
+    end
+    // add c_local / a_local
+    for (int k = 1; k < 4; k++)
+        case (fbzColorPath[15:14]) 2'd1: av[k] = lc[k]; 2'd2: av[k] = lc[0]; default: av[k] = 8'h0; endcase
+    av[0] = fbzColorPath[24:23] != 2'd0 ? lc[0] : 8'h0;
+    for (int k = 0; k < 4; k++) begin o.bc[k] = bc[k]; o.bfac[k] = bfac[k]; o.av[k] = av[k]; end
+    return o;
+endfunction
+function automatic pc_t pix_comb(input ps_t ps);
+    pc_t o;
+    logic [7:0]  fc [4];
+    o.pass = ps.pass;
+    // scale, add, clamp (rgbaint scale_add_and_clamp: (c * f >> 8) + a), invert
+    for (int k = 0; k < 4; k++) begin
+        logic signed [19:0] p;
+        p = ($signed(ps.bc[k]) * $signed({1'b0, ps.bfac[k]})) >>> 8;
+        fc[k] = sat8(18'(p) + $signed({10'b0, ps.av[k]}));
+    end
+    if (fbzColorPath[25]) fc[0] = ~fc[0];
+    if (fbzColorPath[16]) for (int k = 1; k < 4; k++) fc[k] = ~fc[k];
+    // alpha test
+    if (alphaMode[0])
+        case (alphaMode[3:1])
+        3'd0: o.pass = 1'b0;
+        3'd1: if (!(fc[0] < alphaMode[31:24])) o.pass = 1'b0;
+        3'd2: if (!(fc[0] == alphaMode[31:24])) o.pass = 1'b0;
+        3'd3: if (!(fc[0] <= alphaMode[31:24])) o.pass = 1'b0;
+        3'd4: if (!(fc[0] > alphaMode[31:24])) o.pass = 1'b0;
+        3'd5: if (!(fc[0] != alphaMode[31:24])) o.pass = 1'b0;
+        3'd6: if (!(fc[0] >= alphaMode[31:24])) o.pass = 1'b0;
+        default: ;
+        endcase
+    o.c = {fc[0], fc[1], fc[2], fc[3]};
+    return o;
+endfunction
+
+typedef struct packed {
+    logic        ok;                                   // the pixel is written
+    logic [7:0]  r, g, b;
+    logic [15:0] depth;
+} pb_t;
+
+// the pixel out before the dither (compute_depthval, depth_test, alpha_blend): the colour from
+// pix_comb, wfloat, the destination colour and depth
+function automatic pb_t pix_blend(input pc_t pc, input logic [15:0] wf, input logic [15:0] dpix,
+                                  input logic [15:0] dz);
+    pb_t o;
+    logic signed [17:0] dv;
+    logic [7:0] fc [4];
+    o = '0;
+    dv = {2'b0, wf};
+    if (fbzMode[16]) begin
+        dv = dv + 18'(signed'(zaColor[15:0]));
+        dv = (dv < 0) ? 18'sd0 : (dv > 18'sd65535) ? 18'sd65535 : dv;
+    end
+    if (!pc.pass) return o;
+    if (fbzMode[4]) begin
+        logic [15:0] s;
+        logic pass;
+        s = fbzMode[20] ? zaColor[15:0] : dv[15:0];
+        case (fbzMode[7:5])
+        3'd0: pass = 1'b0;
+        3'd1: pass = s < dz;
+        3'd2: pass = s == dz;
+        3'd3: pass = s <= dz;
+        3'd4: pass = s > dz;
+        3'd5: pass = s != dz;
+        3'd6: pass = s >= dz;
+        default: pass = 1'b1;
+        endcase
+        if (!pass) return o;
+    end
+    fc = '{pc.c[31:24], pc.c[23:16], pc.c[15:8], pc.c[7:0]};
+    // alpha blend (alpha planes off: destination alpha 0xFF)
+    if (alphaMode[4]) begin
+        logic [23:0] d;
+        logic [7:0]  dc [4];
+        logic [8:0]  ss [4], ds [4];
+        d = rgb565_888(dpix);
+        dc = '{8'hFF, d[23:16], d[15:8], d[7:0]};
+        for (int k = 1; k < 4; k++) begin
+            case (alphaMode[11:8])
+            4'd1: ss[k] = {1'b0, fc[0]} + 9'd1;
+            4'd2: ss[k] = {1'b0, dc[k]} + 9'd1;
+            4'd3: ss[k] = 9'd256;
+            4'd4: ss[k] = 9'd256;
+            4'd5: ss[k] = 9'd256 - {1'b0, fc[0]};
+            4'd6: ss[k] = 9'd256 - {1'b0, dc[k]};
+            4'd7: ss[k] = 9'd1;
+            4'd15: ss[k] = (fc[0] == 8'd0) ? 9'd1 : 9'd2;     // min(sa, 0x100 - 0xFF) + 1
+            default: ss[k] = 9'd0;
+            endcase
+            case (alphaMode[15:12])
+            4'd1: ds[k] = {1'b0, fc[0]} + 9'd1;
+            4'd2: ds[k] = {1'b0, fc[k]} + 9'd1;
+            4'd3: ds[k] = 9'd256;
+            4'd4: ds[k] = 9'd256;
+            4'd5: ds[k] = 9'd256 - {1'b0, fc[0]};
+            4'd6: ds[k] = 9'd256 - {1'b0, fc[k]};
+            4'd7: ds[k] = 9'd1;
+            4'd15: ds[k] = {1'b0, fc[k]} + 9'd1;
+            default: ds[k] = 9'd0;
+            endcase
+            fc[k] = sat8(18'(({10'b0, fc[k]} * ss[k] + {10'b0, dc[k]} * ds[k]) >> 8));
+        end
+    end
+    o.ok = 1'b1;
+    o.r = fc[1]; o.g = fc[2]; o.b = fc[3];
+    o.depth = dv[15:0];
+    return o;
+endfunction
+
+// ---------------------------------------------------------------- triangle setup and span generation
+//
+// Spans flow through the line-buffer sets in turn: the reader fills a set with the span's colour
+// and depth rows, the pixel pipeline runs the span through it, the writer writes the rows back
+// whole (pixels that fail keep what was read). Within a triangle the stages overlap; the triangle
+// ends when all its spans are written.
+
+typedef enum logic [3:0] {
+    T_IDLE, T_SORT, T_DIV, T_ROW0, T_LINE, T_CLIP, T_SPAN, T_EMIT, T_NEXT, T_DRAIN
+} tstate_t;
+tstate_t ts;
+
+logic signed [15:0] t1x, t1y, t2x, t2y, t3x, t3y;      // sorted vertices, 12.4
+logic signed [11:0] y_cur, y_end;                     // scanline, last + 1
+logic signed [39:0] slope13, slope12, slope23;        // pixels per pixel, 20 fraction bits
+logic [5:0]  div_n;
+logic [39:0] div_rem [3], div_q [3], div_d [3];
+logic        div_neg [3], div_z [3];
+logic [9:0]  sx0, sx1, s_scry;
+logic signed [11:0] cx0, cx1;                          // the clipped ends before the empty test
+logic        row_skip;
+
+// parameters at x = vertex A's integer x on the current row (MAME: start + dy * dpdy), and the
+// multiply that takes them to a span's start: one parameter a clock (A, W, S, T)
+logic signed [31:0] r_a;
+logic signed [63:0] r_w, r_s, r_t;
+logic [1:0]  pk;
+logic signed [31:0] sp_a;
+logic signed [63:0] sp_w, sp_s, sp_t;
+
+wire signed [11:0] axi = 12'(vAx >>> 4), ayi = 12'(vAy >>> 4);
+
+// The edges' x at the scanline centre, 20 fraction bits (mod 2^32): (xa << 20 + dy16 s) >> 4 on
+// the first row (dy16: y + 0.5 - ya in 12.4), then + s a row, which is exact; rounded by MAME's
+// round_coordinate
+function automatic logic signed [11:0] edge_round(input logic signed [31:0] x20);
+    return 12'(x20 >>> 20) + ((x20[19:0] > 20'h80000) ? 12'sd1 : 12'sd0);
+endfunction
+logic signed [56:0] ep [3];                            // the first row's dy16 s
+logic signed [31:0] x13, x12, x23;
+logic signed [11:0] ea, eb;                            // this row's ends, rounded
+logic [9:0]  sy_l;
+
+// the one multiplier of the row and span starts: (y - ay) or (x0 - ax) by the parameter pk's slope,
+// its operands registered (m1), the product the clock after (mprod_q), added the clock after that
+logic signed [11:0] mop_a, ma_q;
+logic signed [63:0] mop_b, mb_q;
+logic signed [63:0] mprod_q;
+logic [2:0]  mk1, mk_q;                                // its {row, parameter}
+logic        mv1, mv_q;
+always_ff @(posedge clk) begin
+    ma_q <= mop_a; mb_q <= mop_b;
+    mk1 <= {ts == T_ROW0, pk};
+    mv1 <= ts == T_ROW0 || ts == T_SPAN;
+    mprod_q <= 64'(ma_q * mb_q);
+    mk_q <= mk1;
+    mv_q <= mv1;
+end
+always_comb begin
+    mop_a = (ts == T_ROW0) ? y_cur - ayi : $signed({2'b0, sx0}) - axi;
+    case ({ts == T_ROW0, pk})
+    3'b100: mop_b = 64'(dAdY);  3'b101: mop_b = dWdY;  3'b110: mop_b = dSdY;  3'b111: mop_b = dTdY;
+    3'b000: mop_b = 64'(dAdX);  3'b001: mop_b = dWdX;  3'b010: mop_b = dSdX;  default: mop_b = dTdX;
+    endcase
+end
+
+// span descriptor handed to the reader
+logic        sd_v;
+logic [9:0]  sd_x0, sd_x1;
+logic [20:0] sd_crow, sd_zrow;
+logic [9:0]  sd_scry;
+logic signed [31:0] sd_a;
+logic signed [63:0] sd_w, sd_s, sd_t;
+logic        sd_take;                                  // the reader takes it this clock
+
+logic        spans_idle;                               // no set busy, pipeline empty
+
+always_ff @(posedge clk) begin
+    tri_done <= 1'b0;
+    if (sd_take) sd_v <= 1'b0;
+    if (mv_q)
+        case (mk_q)
+        3'b100: r_a <= startA + 32'(mprod_q);
+        3'b101: r_w <= startW + mprod_q;
+        3'b110: r_s <= startS + mprod_q;
+        3'b111: r_t <= startT + mprod_q;
+        3'b000: sp_a <= r_a + 32'(mprod_q);
+        3'b001: sp_w <= r_w + mprod_q;
+        3'b010: sp_s <= r_s + mprod_q;
+        default: sp_t <= r_t + mprod_q;
+        endcase
+    if (reset) begin ts <= T_IDLE; sd_v <= 1'b0; end
+    else case (ts)
+    T_IDLE: if (tri_go) begin
+        logic signed [15:0] ax, ay, bx, by, cx, cy;
+        ax = vAx; ay = vAy; bx = vBx; by = vBy; cx = vCx; cy = vCy;
+        if (by < ay) begin {ax, bx} = {bx, ax}; {ay, by} = {by, ay}; end
+        if (cy < by) begin
+            {bx, cx} = {cx, bx}; {by, cy} = {cy, by};
+            if (by < ay) begin {ax, bx} = {bx, ax}; {ay, by} = {by, ay}; end
+        end
+        t1x <= ax; t1y <= ay; t2x <= bx; t2y <= by; t3x <= cx; t3y <= cy;
+        y_cur <= 12'(ay >>> 4) + ((ay[3:0] > 4'd8) ? 12'sd1 : 12'sd0);
+        y_end <= 12'(cy >>> 4) + ((cy[3:0] > 4'd8) ? 12'sd1 : 12'sd0);
+        ts <= T_SORT;
+    end
+    T_SORT: begin
+        // the three edges' slopes, dx / dy, divided side by side (dy = 0: slope 0)
+        logic signed [16:0] dx [3], dy [3];
+        dx[0] = 17'(t3x) - 17'(t1x); dy[0] = 17'(t3y) - 17'(t1y);
+        dx[1] = 17'(t2x) - 17'(t1x); dy[1] = 17'(t2y) - 17'(t1y);
+        dx[2] = 17'(t3x) - 17'(t2x); dy[2] = 17'(t3y) - 17'(t2y);
+        for (int k = 0; k < 3; k++) begin
+            div_neg[k] <= dx[k][16];
+            div_z[k] <= dy[k] == 0;
+            div_q[k] <= {(dx[k][16] ? -dx[k] : dx[k]), 23'h0} >> 3;
+            div_d[k] <= 40'(dy[k]);
+            div_rem[k] <= 40'h0;
+        end
+        div_n <= 6'd40;
+        ts <= T_DIV;
+    end
+    T_DIV: begin
+        logic [40:0] r;
+        logic signed [39:0] q [3];
+        for (int k = 0; k < 3; k++) begin
+            r = {div_rem[k][39:0], div_q[k][39]};
+            div_q[k] <= {div_q[k][38:0], r >= {1'b0, div_d[k]}};
+            div_rem[k] <= (r >= {1'b0, div_d[k]}) ? 40'(r - {1'b0, div_d[k]}) : r[39:0];
+            q[k] = $signed({div_q[k][38:0], r >= {1'b0, div_d[k]}});
+            q[k] = div_z[k] ? 40'sd0 : div_neg[k] ? -q[k] : q[k];
+        end
+        div_n <= div_n - 6'd1;
+        if (div_n == 6'd1) begin
+            slope13 <= q[0]; slope12 <= q[1]; slope23 <= q[2];
+            pk <= 2'd0; ts <= T_ROW0;
+        end
+    end
+    T_ROW0: begin
+        // the first row's parameters: start + (y - ay) * dpdy (the shared multiplier, added above);
+        // the edges' first x
+        if (pk == 2'd0) begin
+            ep[0] <= $signed(17'({y_cur, 4'h8}) - 17'(t1y)) * slope13;
+            ep[1] <= $signed(17'({y_cur, 4'h8}) - 17'(t1y)) * slope12;
+            ep[2] <= $signed(17'({y_cur, 4'h8}) - 17'(t2y)) * slope23;
+        end
+        if (pk == 2'd1) begin
+            x13 <= 32'(($signed({t1x, 20'h0}) + ep[0]) >>> 4);
+            x12 <= 32'(($signed({t1x, 20'h0}) + ep[1]) >>> 4);
+            x23 <= 32'(($signed({t2x, 20'h0}) + ep[2]) >>> 4);
+        end
+        pk <= pk + 2'd1;
+        if (pk == 2'd3) ts <= T_LINE;
+    end
+    T_LINE: begin
+        if (y_cur >= y_end) ts <= T_DRAIN;
+        else begin
+            ea <= edge_round(x13);
+            eb <= edge_round(({y_cur, 4'h8} < 16'(t2y)) ? x12 : x23);
+            sy_l <= yflip ? 10'(yorg - 10'(y_cur)) : 10'(y_cur);
+            ts <= T_CLIP;
+        end
+    end
+    T_CLIP: begin
+        logic signed [11:0] a, b;
+        logic [9:0] sy;
+        a = ea; b = eb;
+        if (a > b) {a, b} = {b, a};
+        sy = sy_l;
+        if (fbzMode[0]) begin
+            if (a < $signed({2'b0, clip_l})) a = $signed({2'b0, clip_l});
+            if (b > $signed({2'b0, clip_r})) b = $signed({2'b0, clip_r});
+        end
+        if (a < 0) a = 0;
+        if (b > 12'sd512) b = 12'sd512;
+        // the empty test is T_SPAN's first clock
+        cx0 <= a; cx1 <= b;
+        row_skip <= (fbzMode[0] && (sy < clip_t || sy >= clip_b)) || y_cur < 0;
+        sx0 <= 10'(a); sx1 <= 10'(b);
+        s_scry <= sy;
+        pk <= 2'd0;
+        ts <= T_SPAN;
+    end
+    T_SPAN: begin
+        // the span start's parameters: the row's + (x0 - ax) * dpdx; an empty row leaves its
+        // first product unused
+        pk <= pk + 2'd1;
+        if (pk == 2'd0 && (cx0 >= cx1 || row_skip)) ts <= T_NEXT;
+        else if (pk == 2'd3) ts <= T_EMIT;
+    end
+    T_EMIT: if ((!sd_v || sd_take) && !mv1 && !mv_q) begin
+        logic [20:0] rb;
+        rb = 21'(s_scry * rowpix) << 1;
+        sd_v <= 1'b1;
+        sd_x0 <= sx0; sd_x1 <= sx1; sd_scry <= s_scry;
+        sd_crow <= rgboffs[fbzMode[15:14] == 2'd0 ? frontbuf : backbuf] + rb;
+        sd_zrow <= auxoffs + rb;
+        sd_a <= sp_a <<< 8; sd_w <= sp_w; sd_s <= sp_s; sd_t <= sp_t;
+        ts <= T_NEXT;
+    end
+    T_NEXT: begin
+        y_cur <= y_cur + 12'sd1;
+        r_a <= r_a + dAdY; r_w <= r_w + dWdY; r_s <= r_s + dSdY; r_t <= r_t + dTdY;
+        x13 <= x13 + 32'(slope13); x12 <= x12 + 32'(slope12); x23 <= x23 + 32'(slope23);
+        ts <= T_LINE;
+    end
+    T_DRAIN: if (!sd_v && spans_idle) begin tri_done <= 1'b1; ts <= T_IDLE; end
+    default: ts <= T_IDLE;
+    endcase
+end
+
+// ---------------------------------------------------------------- line-buffer sets
+
+// a set: colour and depth rows, a word (two pixels) an entry; the span it holds
+typedef enum logic [2:0] { S_FREE, S_READ, S_READY, S_PROC, S_DONE, S_WRITE } sstate_t;
+localparam int NSET = 4;                               // line-buffer sets (3 or 4)
+sstate_t     st [NSET];
+logic [9:0]  s_x0 [NSET], s_x1 [NSET], s_sy [NSET];
+logic [20:0] s_crw [NSET], s_zrw [NSET];
+logic signed [31:0] s_a [NSET];
+logic signed [63:0] s_w [NSET], s_s [NSET], s_t [NSET];
+logic [1:0]  rd_set, px_set, wr_set;                   // next set for each stage, in turn
+
+// RAM ports: A writes (reader beats, pipeline pixels), B reads (pipeline, writer); colour and
+// depth addressed apart, so that their streams run side by side. An entry is a 64-bit beat, two
+// words (four pixels): the masters are wide (hornet_ddr3 WIDE)
+logic [6:0]  lac_addr [NSET], laz_addr [NSET], lbc_addr [NSET], lbz_addr [NSET];
+logic [7:0]  lca_be [NSET], lza_be [NSET];
+logic [63:0] lca_d [NSET], lza_d [NSET];
+logic [63:0] lcb_q [NSET], lzb_q [NSET];
+genvar gs;
+generate for (gs = 0; gs < NSET; gs++) begin : g_set
+    hornet_sdpram #(.AW(7), .DW(64)) u_c (.clk,
+        .a_addr(lac_addr[gs]), .a_be(lca_be[gs]), .a_wdata(lca_d[gs]),
+        .b_addr(lbc_addr[gs]), .b_rdata(lcb_q[gs]));
+    hornet_sdpram #(.AW(7), .DW(64)) u_z (.clk,
+        .a_addr(laz_addr[gs]), .a_be(lza_be[gs]), .a_wdata(lza_d[gs]),
+        .b_addr(lbz_addr[gs]), .b_rdata(lzb_q[gs]));
+end endgenerate
+
+function automatic logic [1:0] nxt3(input logic [1:0] k);   // the next set
+    return (NSET == 3 && k == 2'd2) ? 2'd0 : k + 2'd1;
+endfunction
+
+// ---------------------------------------------------------------- span reader
+//
+// A span's depth and colour rows are requested together, and the next span's as soon as a set is
+// free: the data comes back in request order on each port, set after set, while later requests
+// wait in the memory.
+
+typedef enum logic [0:0] { R_IDLE, R_REQ } rstate_t;
+rstate_t     rs;
+logic        rz_iss, rc_iss;                           // this span's requests are accepted
+logic [1:0]  zd_set, cd_set;                           // the set each port's data is for
+logic [8:0]  zd_n, cd_n;                               // the next word, from the span's first
+logic [NSET-1:0] zdn, cdn;                             // a set's depth, colour rows are in
+
+// a set's first and last word (comb arrays: Quartus 17 fails on a function reading s_x0[k][9:1])
+logic [8:0]  sw0 [NSET], sw1 [NSET];
+logic [8:0]  rw0 [NSET], rw1 [NSET];                   // ... widened to whole beats
+always_comb
+    for (int k = 0; k < NSET; k++) begin
+        sw0[k] = s_x0[k][9:1]; sw1[k] = 9'((s_x1[k] - 10'd1) >> 1);
+        rw0[k] = {sw0[k][8:1], 1'b0}; rw1[k] = {sw1[k][8:1], 1'b1};
+    end
+
+wire zd_v = io_memFbAuxRead_readDataValid;
+wire cd_v = io_memFbColorRead_readDataValid;
+wire zacc = rs == R_REQ && !rz_iss && io_memFbAuxRead_waitRequestn;
+wire cacc = rs == R_REQ && !rc_iss && io_memFbColorRead_waitRequestn;
+
+assign sd_take = rs == R_IDLE && sd_v && st[rd_set] == S_FREE;
+
+always_ff @(posedge clk) begin
+    if (reset) begin
+        rs <= R_IDLE; rd_set <= 2'd0; zd_set <= 2'd0; cd_set <= 2'd0; zd_n <= 9'd0; cd_n <= 9'd0;
+        zdn <= '0; cdn <= '0;
+        for (int k = 0; k < NSET; k++) st[k] <= S_FREE;
+    end else begin
+        case (rs)
+        R_IDLE: if (sd_take) begin
+            s_x0[rd_set] <= sd_x0; s_x1[rd_set] <= sd_x1; s_sy[rd_set] <= sd_scry;
+            s_crw[rd_set] <= sd_crow; s_zrw[rd_set] <= sd_zrow;
+            s_a[rd_set] <= sd_a; s_w[rd_set] <= sd_w; s_s[rd_set] <= sd_s; s_t[rd_set] <= sd_t;
+            st[rd_set] <= S_READ;
+            rz_iss <= 1'b0; rc_iss <= 1'b0;
+            rs <= R_REQ;
+        end
+        R_REQ: begin
+            if (zacc) rz_iss <= 1'b1;
+            if (cacc) rc_iss <= 1'b1;
+            if ((rz_iss || zacc) && (rc_iss || cacc)) begin rd_set <= nxt3(rd_set); rs <= R_IDLE; end
+        end
+        default: rs <= R_IDLE;
+        endcase
+        // a beat (two words) a clock
+        if (zd_v) begin
+            if (rw0[zd_set] + zd_n + 9'd1 == rw1[zd_set]) begin zdn[zd_set] <= 1'b1; zd_set <= nxt3(zd_set); zd_n <= 9'd0; end
+            else zd_n <= zd_n + 9'd2;
+        end
+        if (cd_v) begin
+            if (rw0[cd_set] + cd_n + 9'd1 == rw1[cd_set]) begin cdn[cd_set] <= 1'b1; cd_set <= nxt3(cd_set); cd_n <= 9'd0; end
+            else cd_n <= cd_n + 9'd2;
+        end
+        for (int k = 0; k < NSET; k++)
+            if (st[k] == S_READ && zdn[k] && cdn[k]) begin st[k] <= S_READY; zdn[k] <= 1'b0; cdn[k] <= 1'b0; end
+        // the pipeline and the writer move the other sets on
+        if (px_start) st[px_set] <= S_PROC;
+        if (px_finish) st[px_fin_set] <= S_DONE;
+        if (wr_start) st[wr_set] <= S_WRITE;
+        if (wr_finish) st[wr_set] <= S_FREE;
+    end
+end
+
+assign io_memFbAuxRead_read = rs == R_REQ && !rz_iss;
+assign io_memFbAuxRead_write = 1'b0;
+assign io_memFbAuxRead_address = FB_BASE + {11'h0, s_zrw[rd_set]} + {21'h0, rw0[rd_set], 2'b00};
+assign io_memFbAuxRead_burstCount = {2'b0, rw1[rd_set] - rw0[rd_set] + 9'd1};
+assign io_memFbAuxRead_byteEnable = 4'hF;
+assign io_memFbAuxRead_writeData = 32'h0;
+assign io_memFbColorRead_read = rs == R_REQ && !rc_iss;
+assign io_memFbColorRead_write = 1'b0;
+assign io_memFbColorRead_address = FB_BASE + {11'h0, s_crw[rd_set]} + {21'h0, rw0[rd_set], 2'b00};
+assign io_memFbColorRead_burstCount = {2'b0, rw1[rd_set] - rw0[rd_set] + 9'd1};
+assign io_memFbColorRead_byteEnable = 4'hF;
+assign io_memFbColorRead_writeData = 32'h0;
+
+// ---------------------------------------------------------------- pixel pipeline
+//
+//   q1  the pixel from the iterators, A clamped        q2  |W|, |S|, |T|, signs; W << 16's leading zeros
+//   q3  |W|'s leading zeros; wfloat                     q4  mantissa m; its seed from the ROM
+//   q5  m * seed                                        q6  the Newton correction
+//   q7  the reciprocal y (2^62 / m >> 7, 24 bits)       q8  |S| y, |T| y
+//   q9  S, T (24.8)                                     q10 texel coordinates
+//   q11 tile slots, tags, bank addresses; the tag check (a miss stalls q1-q11 while the tile fills)
+//   q12 texels from the banks                           q13 decoded
+//   q14 bilinear, horizontal                            q15 bilinear, vertical; texture combine
+//   q16 colour combine's selects, chroma key            q17 scale, add, clamp; alpha test
+//   q18 depth test, blend (destination read at q16)
+//   then the dither, into the line buffer. q12 onwards always advance: a stall leaves a bubble.
+//
+// The reciprocal: |W| normalised to a 32-bit mantissa m (top bit set); m's 10 bits below the top
+// address the seed ROM (2^62 / m to about 11 bits, vraster_recip.hex); one Newton step takes it to
+// about 22 bits; s32(i * 256 / W) = (|i| >> 8) y >> (71 - lz) with the signs (MAME: doubles;
+// docs/HACKS.md).
+
+localparam int TCB = 5;                                // texture cache slot bits a coordinate
+localparam int TSW = 2 * TCB;
+
+logic        stall;                                    // a cache fill is under way
+logic        px_run;                                   // the iterators are issuing a span
+logic [1:0]  p0_set;
+logic [9:0]  p0_x;
+logic signed [31:0] p0_a;
+logic signed [63:0] p0_w, p0_s, p0_t;
+logic        px_start, px_finish;
+logic [1:0]  px_fin_set;
+
+typedef struct packed {
+    logic        v, last;
+    logic [1:0]  set;
+    logic [9:0]  x, sy;
+    logic [7:0]  ia;                                   // iterated A, clamped
+    logic [15:0] wf;                                   // wfloat, from q3
+} pm_t;
+pm_t m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17, m18;
+
+assign px_start = !px_run && st[px_set] == S_READY && !stall;
+
+always_ff @(posedge clk) begin
+    if (reset) begin px_run <= 1'b0; px_set <= 2'd0; end
+    else if (!stall) begin
+        if (px_start) begin
+            px_run <= 1'b1; p0_set <= px_set;
+            p0_x <= s_x0[px_set];
+            p0_a <= s_a[px_set]; p0_w <= s_w[px_set]; p0_s <= s_s[px_set]; p0_t <= s_t[px_set];
+        end else if (px_run) begin
+            p0_x <= p0_x + 10'd1;
+            p0_a <= p0_a + (dAdX <<< 8); p0_w <= p0_w + dWdX; p0_s <= p0_s + dSdX; p0_t <= p0_t + dTdX;
+            if (p0_x + 10'd1 == s_x1[p0_set]) begin px_run <= 1'b0; px_set <= nxt3(px_set); end
+        end
+    end
+end
+
+function automatic logic [6:0] clz64(input logic [63:0] v);      // 64 for zero
+    logic [6:0] n;
+    n = 7'd64;
+    for (int i = 0; i < 64; i++) if (v[i]) n = 7'(63 - i);
+    return n;
+endfunction
+
+// compute_wfloat from iterw's leading zeros
+function automatic logic [15:0] wfloat_lz(input logic [6:0] lz, input logic signed [63:0] iterw);
+    logic signed [7:0] e;
+    logic [63:0] sh;
+    e = $signed({1'b0, lz}) - 8'sd16;
+    if (e < 0) return 16'h0000;
+    if (e >= 16) return 16'hFFFF;
+    sh = iterw >>> (35 - e);
+    return (({e[3:0], 12'h0}) | (sh[15:0] ^ 16'h1FFF)) + 16'd1;
+endfunction
+
+typedef struct packed {
+    logic [55:0] as, at;                               // |S| >> 8, |T| >> 8
+    logic        nw, zw, ns, nt;                       // W < 0, W == 0, S < 0, T < 0
+    logic [6:0]  lz;                                   // |W|'s leading zeros, from q3
+} ca_t;
+
+// the seed ROM (generated by scripts/gen_recip_rom.py)
+logic [13:0] seed_rom [1024];
+initial $readmemh(RECIP_HEX, seed_rom);
+
+logic signed [63:0] w1, s1, t1, w2;
+logic [63:0] aw2, aw3;
+logic [6:0]  lzw2;
+ca_t         c2, c3, c4, c5, c6, c7, c8;
+logic [31:0] mn3, mn4;                                 // the mantissa: from q3's registers, at q4
+logic [13:0] seed4, seed5, seed6;
+logic [45:0] my5;
+logic signed [34:0] cp6;
+logic [23:0] y7;
+logic [79:0] ps8, pt8;
+logic signed [31:0] fs8, ft8;                          // the non-perspective S, T
+logic signed [31:0] sq9, tq9;
+logic        nw9;
+tc_t         tc10, tc11, tc12, tc13, tc14;
+logic [TSW-1:0] slot11 [4];
+logic [26:0] tag11 [4];
+logic [TSW+1:0] ra11 [4];
+
+assign mn3 = 32'((aw3 << c3.lz) >> 32);
+always_ff @(posedge clk) if (!stall) seed4 <= seed_rom[mn3[30:21]];
+
+always_ff @(posedge clk) if (!stall) begin
+    logic [63:0] as, at;
+    logic signed [47:0] e;
+    logic signed [19:0] er;
+    logic [31:0] yy, qs, qt;
+    logic [TSW+1:0] ra [4];
+    // q1
+    m1.v <= px_run; m1.last <= px_run && p0_x + 10'd1 == s_x1[p0_set];
+    m1.set <= p0_set; m1.x <= p0_x; m1.sy <= s_sy[p0_set];
+    m1.ia <= pclamp8(12'(p0_a >>> 20)); m1.wf <= 16'h0;
+    w1 <= p0_w; s1 <= p0_s; t1 <= p0_t;
+    // q2
+    m2 <= m1; w2 <= w1;
+    aw2 <= w1[63] ? 64'(-w1) : 64'(w1);
+    as = s1[63] ? 64'(-s1) : 64'(s1);
+    at = t1[63] ? 64'(-t1) : 64'(t1);
+    c2.as <= as[63:8]; c2.at <= at[63:8];
+    c2.nw <= w1[63]; c2.zw <= w1 == 0; c2.ns <= s1[63]; c2.nt <= t1[63]; c2.lz <= 7'd0;
+    lzw2 <= clz64(64'(w1 <<< 16));
+    // q3
+    m3 <= m2; m3.wf <= wfloat_lz(lzw2, w2 <<< 16);
+    aw3 <= aw2;
+    c3 <= c2; c3.lz <= clz64(aw2);
+    // q4 (the seed: above)
+    m4 <= m3; c4 <= c3; mn4 <= mn3;
+    // q5
+    m5 <= m4; c5 <= c4;
+    my5 <= 46'(mn4) * 46'(seed4);                      // m y0 = my << 17 (y0 = seed << 17)
+    seed5 <= seed4;
+    // q6: (2^62 - m y0) >> 17 kept to its top 20 bits (>> 32); y0 e >> 62 = seed er >> 13
+    m6 <= m5; c6 <= c5;
+    e = $signed(48'h1 << 45) - $signed({2'b0, my5});
+    er = 20'(e >>> 15);
+    cp6 <= ($signed({1'b0, seed5}) * er) >>> 13;
+    seed6 <= seed5;
+    // q7
+    m7 <= m6; c7 <= c6;
+    yy = {1'b0, seed6, 17'h0} + 32'(cp6);
+    y7 <= yy[30:7];
+    // q8
+    m8 <= m7; c8 <= c7;
+    ps8 <= 80'(c7.as) * 80'(y7);
+    pt8 <= 80'(c7.at) * 80'(y7);
+    fs8 <= c7.ns ? -$signed(32'(c7.as >> 16)) : $signed(32'(c7.as >> 16));    // s32(S / 2^24)
+    ft8 <= c7.nt ? -$signed(32'(c7.at >> 16)) : $signed(32'(c7.at >> 16));
+    // q9
+    m9 <= m8; nw9 <= c8.nw;
+    qs = 32'(ps8 >> (71 - c8.lz)); qt = 32'(pt8 >> (71 - c8.lz));
+    if (!textureMode[0]) begin sq9 <= fs8; tq9 <= ft8; end
+    else if (c8.zw) begin sq9 <= 32'sh8000_0000; tq9 <= 32'sh8000_0000; end
+    else begin
+        sq9 <= (c8.ns ^ c8.nw) ? -$signed(qs) : $signed(qs);
+        tq9 <= (c8.nt ^ c8.nw) ? -$signed(qt) : $signed(qt);
+    end
+    // q10
+    m10 <= m9;
+    tc10 <= tex_map(sq9, tq9, nw9);
+    // q11
+    m11 <= m10; tc11 <= tc10;
+    for (int b = 0; b < 4; b++) ra[b] = '0;
+    for (int k = 0; k < 4; k++) begin
+        logic [7:0] s, t;
+        s = tap_s(tc10, k); t = tap_t(tc10, k);
+        slot11[k] <= tile_slot(s, t);
+        tag11[k] <= tile_tag(s, t);
+        ra[{t[0], s[0]}] = {tile_slot(s, t), t[1], s[1]};
+    end
+    for (int b = 0; b < 4; b++) ra11[b] <= ra[b];
+end
+
+// ---------------------------------------------------------------- texture cache
+//
+// 4x4-texel tiles in 1 << TSW slots (slot: the tile's low TCB s and t bits, so that neighbouring
+// tiles never share one); four banks by (s & 1, t & 1), so that a bilinear footprint is one read
+// of each. A tag is the tile's first texel address with the texture's width and texel size, in
+// block RAM: a copy a tap, read at q11 (the slots of the pixel entering q11, or of the one held
+// there while it stalls). Texture memory writes clear it, a slot a clock (tag_clr), and triangles
+// wait for that. Frame 2150's tile fills by size: 64 slots 20,040, 256 9,687, 1024 2,487; at
+// memlat 20, 256 slots take 925k clocks for the frame, 1024 703k. At 256 the board bench (one burst a port at a time) falls a frame behind at 2150.
+
+logic [15:0] tbank0 [4 << TSW], tbank1 [4 << TSW], tbank2 [4 << TSW], tbank3 [4 << TSW];
+logic [3:0]  tb_we;
+logic [TSW+1:0] tb_wa [4];
+logic [15:0] tb_wd [4];
+logic [27:0] tagm0 [1 << TSW], tagm1 [1 << TSW], tagm2 [1 << TSW], tagm3 [1 << TSW];  // valid, tag
+logic [27:0] tq11 [4];                                 // q11's taps' entries
+logic        tg_we;
+logic [TSW-1:0] tg_wa;
+logic [27:0] tg_wd;
+logic        tag_clr;                                  // clearing the tags
+logic [TSW-1:0] clr_i;
+logic [15:0] tb_q [4];
+
+function automatic logic [26:0] tile_tag(input logic [7:0] s, input logic [7:0] t);
+    return {texel_addr({s[7:2], 2'b00}, {t[7:2], 2'b00}), t_twb, t16};
+endfunction
+function automatic logic [TSW-1:0] tile_slot(input logic [7:0] s, input logic [7:0] t);
+    return {t[TCB+1:2], s[TCB+1:2]};
+endfunction
+// texel k of a footprint: 0 (s0,t0), 1 (s1,t0), 2 (s0,t1), 3 (s1,t1)
+function automatic logic [7:0] tap_s(input tc_t c, input int k);
+    return (k & 1) ? c.s1 : c.s0;
+endfunction
+function automatic logic [7:0] tap_t(input tc_t c, input int k);
+    return (k & 2) ? c.t1 : c.t0;
+endfunction
+
+logic [3:0]  miss;
+always_comb
+    for (int k = 0; k < 4; k++)
+        miss[k] = m11.v && fbzColorPath[27] && (k == 0 || tc11.bil) &&
+                  !(tq11[k][27] && tq11[k][26:0] == tag11[k]);
+
+// the tag reads: q10's taps' slots as they enter q11, q11's while it holds
+logic [TSW-1:0] tg_ra [4];
+always_comb
+    for (int k = 0; k < 4; k++) tg_ra[k] = stall ? slot11[k] : tile_slot(tap_s(tc10, k), tap_t(tc10, k));
+always_ff @(posedge clk) begin
+    if (tg_we) begin tagm0[tg_wa] <= tg_wd; tagm1[tg_wa] <= tg_wd; tagm2[tg_wa] <= tg_wd; tagm3[tg_wa] <= tg_wd; end
+    tq11[0] <= tagm0[tg_ra[0]];
+    tq11[1] <= tagm1[tg_ra[1]];
+    tq11[2] <= tagm2[tg_ra[2]];
+    tq11[3] <= tagm3[tg_ra[3]];
+end
+
+// fill: the first missing tile and up to TRUN-1 after it along s, to the texture row's end (spans
+// run along s, and a row of a run is one burst: a latency for TRUN tiles). Four row reads are
+// issued back to back (a tile-row is a word of 8-bit texels, two of 16-bit) and their data written
+// as it comes, row after row, tile after tile; then the run's tags a clock each (F2_TAG); F2_WAIT
+// lets the last reach the tag read
+localparam int TRUN = 8;
+typedef enum logic [2:0] { F2_IDLE, F2_REQ, F2_DATA, F2_TAG, F2_WAIT } fillst_t;
+fillst_t     fls;
+logic [7:0]  cf_s, cf_t;                               // the run's first texel
+logic [3:0]  cf_kn;                                    // tiles in the run
+logic [1:0]  cf_rq;                                    // the next row to request
+logic [1:0]  cf_r;                                     // the next data word's row
+logic [2:0]  cf_k;                                     // ... its tile in the run
+logic        cf_w;                                     // ... and its word within a 16-bit tile-row
+logic [2:0]  tg_k;                                     // the next tag written
+logic        hp_v;                                     // an 8-bit word's second texel pair, written
+logic [1:0]  hp_r;                                     // the clock after the word
+logic [2:0]  hp_k;
+logic [15:0] hp_d;
+logic        tex_clear;                                // a texture memory write
+wire         fill_dv = (fls == F2_REQ || fls == F2_DATA) && io_memTex_readDataValid;
+wire         k_last = {1'b0, cf_k} == cf_kn - 4'd1;
+wire         fill_last = fill_dv && cf_r == 2'd3 && k_last && (cf_w || !t16);
+// tile k of the run's first texel
+function automatic logic [7:0] run_s(input logic [7:0] s, input logic [2:0] k);
+    return s + {3'b0, k, 2'b00};
+endfunction
+
+assign stall = (miss != 4'h0) || fls != F2_IDLE;
+
+always_ff @(posedge clk) begin
+    if (tag_clr) begin
+        clr_i <= clr_i + 1'd1;
+        if (&clr_i) tag_clr <= 1'b0;
+    end
+    if (reset || (tex_clear && !tag_clr)) begin tag_clr <= 1'b1; clr_i <= '0; end
+    hp_v <= fill_dv && !t16;
+    hp_r <= cf_r;
+    hp_k <= cf_k;
+    hp_d <= io_memTex_readData[31:16];
+    if (fill_dv) begin
+        if (t16 && !cf_w) cf_w <= 1'b1;
+        else begin
+            cf_w <= 1'b0;
+            if (k_last) begin cf_k <= 3'd0; cf_r <= cf_r + 2'd1; end
+            else cf_k <= cf_k + 3'd1;
+        end
+    end
+    if (reset) fls <= F2_IDLE;
+    else case (fls)
+    F2_IDLE: if (miss != 4'h0) begin
+        int k;
+        logic [7:0] ms, mt;
+        k = miss[0] ? 0 : miss[1] ? 1 : miss[2] ? 2 : 3;
+        ms = tap_s(tc11, k); mt = tap_t(tc11, k);
+        cf_s <= {ms[7:2], 2'b00}; cf_t <= {mt[7:2], 2'b00};
+        // the run: TRUN tiles, or to the end of the texture's row (its width 1 << t_twb texels)
+        begin
+            logic [8:0] left;
+            left = (9'd1 << t_twb) - {1'b0, ms[7:2], 2'b00};
+            cf_kn <= (left[8:2] >= 7'(TRUN)) ? 4'(TRUN) : left[5:2];
+        end
+        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_w <= 1'b0;
+        fls <= F2_REQ;
+    end
+    F2_REQ: if (io_memTex_waitRequestn) begin
+        cf_rq <= cf_rq + 2'd1;
+        if (cf_rq == 2'd3) fls <= F2_DATA;
+    end
+    F2_DATA: if (fill_last) begin tg_k <= 3'd0; fls <= F2_TAG; end
+    F2_TAG: begin
+        tg_k <= tg_k + 3'd1;
+        if ({1'b0, tg_k} == cf_kn - 4'd1) fls <= F2_WAIT;
+    end
+    F2_WAIT: fls <= F2_IDLE;
+    default: fls <= F2_IDLE;
+    endcase
+end
+
+// the tag writes: the run's tiles after their data, or the clear's
+always_comb begin
+    tg_we = tag_clr || fls == F2_TAG;
+    tg_wa = tag_clr ? clr_i : tile_slot(run_s(cf_s, tg_k), cf_t);
+    tg_wd = tag_clr ? 28'h0 : {1'b1, tile_tag(run_s(cf_s, tg_k), cf_t)};
+end
+
+// the fill's bank writes, two texels a clock into banks (row parity, column parity): a 16-bit
+// word's two, or an 8-bit word's first pair and the previous word's second (rows alternate parity)
+always_comb begin
+    tb_we = 4'h0;
+    for (int b = 0; b < 4; b++) begin tb_wa[b] = '0; tb_wd[b] = 16'h0; end
+    for (int c = 0; c < 2; c++) begin
+        logic [1:0] b;
+        if (fill_dv) begin
+            b = {cf_r[0], 1'(c)};
+            tb_we[b] = 1'b1;
+            tb_wa[b] = {tile_slot(run_s(cf_s, cf_k), cf_t), cf_r[1], t16 ? cf_w : 1'b0};
+            tb_wd[b] = t16 ? io_memTex_readData[16 * c +: 16] : {8'h00, io_memTex_readData[8 * c +: 8]};
+        end
+        if (hp_v) begin
+            b = {hp_r[0], 1'(c)};
+            tb_we[b] = 1'b1;
+            tb_wa[b] = {tile_slot(run_s(cf_s, hp_k), cf_t), hp_r[1], 1'b1};
+            tb_wd[b] = {8'h00, hp_d[8 * c +: 8]};
+        end
+    end
+end
+
+always_ff @(posedge clk) begin
+    if (tb_we[0]) tbank0[tb_wa[0]] <= tb_wd[0];
+    if (tb_we[1]) tbank1[tb_wa[1]] <= tb_wd[1];
+    if (tb_we[2]) tbank2[tb_wa[2]] <= tb_wd[2];
+    if (tb_we[3]) tbank3[tb_wa[3]] <= tb_wd[3];
+    if (!stall) begin
+        tb_q[0] <= tbank0[ra11[0]];
+        tb_q[1] <= tbank1[ra11[1]];
+        tb_q[2] <= tbank2[ra11[2]];
+        tb_q[3] <= tbank3[ra11[3]];
+    end
+end
+
+// ---------------------------------------------------------------- q12 onwards and the result
+
+logic [31:0] tx13 [4];
+logic [31:0] tx14;
+logic [51:0] h0_14, h1_14;
+logic [31:0] tex15;
+ps_t         ps16;
+pc_t         pc17;
+pb_t         pb18;
+logic [15:0] dpix17, dz17;
+
+always_comb
+    for (int k = 0; k < NSET; k++) begin
+        lbc_addr[k] = (ws == W_RUN && wr_set == 2'(k)) ? wc_next[7:1] : m16.x[8:2];
+        lbz_addr[k] = (ws == W_RUN && wr_set == 2'(k)) ? wz_next[7:1] : m16.x[8:2];
+    end
+
+always_comb begin
+    logic [31:0] dc, dz;
+    dc = m17.x[1] ? lcb_q[m17.set][63:32] : lcb_q[m17.set][31:0];
+    dz = m17.x[1] ? lzb_q[m17.set][63:32] : lzb_q[m17.set][31:0];
+    dpix17 = m17.x[0] ? dc[31:16] : dc[15:0];
+    dz17 = m17.x[0] ? dz[31:16] : dz[15:0];
+end
+
+always_ff @(posedge clk) begin
+    // q12
+    if (!stall) begin m12 <= m11; tc12 <= tc11; end
+    else m12.v <= 1'b0;
+    // q13
+    m13 <= m12; tc13 <= tc12;
+    for (int k = 0; k < 4; k++) begin
+        logic [7:0] s, t;
+        s = tap_s(tc12, k); t = tap_t(tc12, k);
+        tx13[k] <= texel_argb(textureMode[11:8], tb_q[{t[0], s[0]}]);
+    end
+    // q14
+    m14 <= m13; tc14 <= tc13;
+    tx14 <= tx13[0];
+    h0_14 <= bil_h(tx13[0], tx13[1], tc13.sf);
+    h1_14 <= bil_h(tx13[2], tx13[3], tc13.sf);
+    // q15
+    m15 <= m14;
+    tex15 <= fbzColorPath[27] ? tex_combine(tc14.bil ? bil_v(h0_14, h1_14, tc14.tf) : tx14) : 32'h0;
+    // q16
+    m16 <= m15;
+    ps16 <= pix_sel(m15.ia, tex15);
+    // q17
+    m17 <= m16;
+    pc17 <= pix_comb(ps16);
+    // q18
+    m18 <= m17;
+    pb18 <= pix_blend(pc17, m17.wf, dpix17, dz17);
+end
+
+// line-buffer port A: the reader's words, or q18's pixel, dithered
+logic [15:0] px_color;
+assign px_color = dither565(fbzMode, m18.sy[1:0], m18.x[1:0], pb18.r, pb18.g, pb18.b);
+always_comb
+    for (int k = 0; k < NSET; k++) begin
+        lac_addr[k] = 7'h0; laz_addr[k] = 7'h0;
+        lca_be[k] = 8'h0; lza_be[k] = 8'h0; lca_d[k] = 64'h0; lza_d[k] = 64'h0;
+        if (m18.v && m18.set == 2'(k) && pb18.ok) begin
+            lac_addr[k] = m18.x[8:2]; laz_addr[k] = m18.x[8:2];
+            lca_d[k] = {4{px_color}}; lza_d[k] = {4{pb18.depth}};
+            lca_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
+            lza_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
+        end
+        if (zd_v && zd_set == 2'(k)) begin
+            laz_addr[k] = 7'((rw0[zd_set] + zd_n) >> 1);
+            lza_d[k] = {io_memFbAuxRead_readDataHi, io_memFbAuxRead_readData}; lza_be[k] = 8'hFF;
+        end
+        if (cd_v && cd_set == 2'(k)) begin
+            lac_addr[k] = 7'((rw0[cd_set] + cd_n) >> 1);
+            lca_d[k] = {io_memFbColorRead_readDataHi, io_memFbColorRead_readData}; lca_be[k] = 8'hFF;
+        end
+    end
+
+assign px_finish = m18.v && m18.last;
+assign px_fin_set = m18.set;
+
+// ---------------------------------------------------------------- span writer
+//
+// The set's colour and depth rows back to memory, side by side, a beat (two words) a clock each,
+// from an even word to an odd one, the pixels outside the span with their byte enables off. A
+// stream's next beat is read from the line buffer as its current one is taken.
+
+typedef enum logic [0:0] { W_IDLE, W_RUN } wstate_t;
+wstate_t     ws;
+logic        wr_start, wr_finish;
+logic [1:0]  wr_fin_set;
+logic [8:0]  ww0, ww1;
+logic [8:0]  wc_a, wz_a, wc_next, wz_next;             // the word each stream presents; read next
+logic        wc_v, wz_v;                               // the line buffer's output holds it
+logic        wc_on, wz_on;                             // the stream has words left
+wire         wc_acc = ws == W_RUN && wc_on && wc_v && io_memFbColorWrite_waitRequestn;
+wire         wz_acc = ws == W_RUN && wz_on && wz_v && io_memFbAuxWrite_waitRequestn;
+
+assign wr_start = ws == W_IDLE && st[wr_set] == S_DONE;
+assign wr_fin_set = wr_set;
+assign wc_next = wc_acc ? wc_a + 9'd2 : wc_a;
+assign wz_next = wz_acc ? wz_a + 9'd2 : wz_a;
+assign wr_finish = (ws == W_RUN && !(wc_on && !(wc_acc && wc_a + 9'd1 == ww1)) && !(wz_on && !(wz_acc && wz_a + 9'd1 == ww1))) ||
+                   (wr_start && !fbzMode[9] && !(fbzMode[10] && aux_ok));
+
+always_ff @(posedge clk) begin
+    if (reset) begin ws <= W_IDLE; wr_set <= 2'd0; end
+    else case (ws)
+    W_IDLE: if (wr_start) begin
+        ww0 <= rw0[wr_set]; ww1 <= rw1[wr_set];
+        wc_a <= rw0[wr_set]; wz_a <= rw0[wr_set];
+        wc_v <= 1'b0; wz_v <= 1'b0;
+        wc_on <= fbzMode[9]; wz_on <= fbzMode[10] && aux_ok;
+        if (fbzMode[9] || (fbzMode[10] && aux_ok)) ws <= W_RUN;
+        else wr_set <= nxt3(wr_set);                    // nothing to write
+    end
+    W_RUN: begin
+        wc_v <= 1'b1; wz_v <= 1'b1;
+        wc_a <= wc_next; wz_a <= wz_next;
+        if (wc_acc && wc_a + 9'd1 == ww1) wc_on <= 1'b0;
+        if (wz_acc && wz_a + 9'd1 == ww1) wz_on <= 1'b0;
+        if (wr_finish) begin ws <= W_IDLE; wr_set <= nxt3(wr_set); end
+    end
+    default: ws <= W_IDLE;
+    endcase
+end
+
+// a word's byte enables: its two pixels inside [x0, x1)
+function automatic logic [3:0] pix_be(input logic [8:0] w, input logic [9:0] x0, input logic [9:0] x1);
+    return {{2{{w, 1'b1} >= x0 && {w, 1'b1} < x1}}, {2{{w, 1'b0} >= x0 && {w, 1'b0} < x1}}};
+endfunction
+
+always_comb begin
+    logic [9:0] x0, x1;
+    x0 = s_x0[wr_set]; x1 = s_x1[wr_set];
+    io_memFbColorWrite_read = 1'b0;
+    io_memFbColorWrite_write = ws == W_RUN && wc_on && wc_v;
+    io_memFbColorWrite_address = FB_BASE + {11'h0, s_crw[wr_set]} + {21'h0, ww0, 2'b00};
+    io_memFbColorWrite_burstCount = {2'b0, ww1 - ww0 + 9'd1};
+    io_memFbColorWrite_byteEnable = pix_be(wc_a, x0, x1);
+    io_memFbColorWrite_byteEnableHi = pix_be(wc_a + 9'd1, x0, x1);
+    io_memFbColorWrite_writeData = lcb_q[wr_set][31:0];
+    io_memFbColorWrite_writeDataHi = lcb_q[wr_set][63:32];
+    io_memFbAuxWrite_read = 1'b0;
+    io_memFbAuxWrite_write = ws == W_RUN && wz_on && wz_v;
+    io_memFbAuxWrite_address = FB_BASE + {11'h0, s_zrw[wr_set]} + {21'h0, ww0, 2'b00};
+    io_memFbAuxWrite_burstCount = {2'b0, ww1 - ww0 + 9'd1};
+    io_memFbAuxWrite_byteEnable = pix_be(wz_a, x0, x1);
+    io_memFbAuxWrite_byteEnableHi = pix_be(wz_a + 9'd1, x0, x1);
+    io_memFbAuxWrite_writeData = lzb_q[wr_set][31:0];
+    io_memFbAuxWrite_writeDataHi = lzb_q[wr_set][63:32];
+end
+
+logic        sets_free;
+always_comb begin
+    sets_free = 1'b1;
+    for (int k = 0; k < NSET; k++) if (st[k] != S_FREE) sets_free = 1'b0;
+end
+assign spans_idle = sets_free && rs == R_IDLE &&
+                    !px_run &&
+                    !m1.v && !m2.v && !m3.v && !m4.v && !m5.v && !m6.v && !m7.v && !m8.v && !m9.v &&
+                    !m10.v && !m11.v && !m12.v && !m13.v && !m14.v && !m15.v && !m16.v && !m17.v && !m18.v;

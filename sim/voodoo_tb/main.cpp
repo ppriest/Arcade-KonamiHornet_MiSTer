@@ -36,6 +36,7 @@ static const uint32_t FB_BASE = 0x40000000u - 12u * 1024 * 1024;
 static const uint32_t TEX_BASE = FB_BASE + 4u * 1024 * 1024;
 static std::vector<uint8_t> fbmem(4u << 20), texmem(8u << 20);
 static int g_memlat = 2;                  // clocks from a read burst accepted to its first word (+memlat=)
+static int g_memq = 1;                    // read bursts a port may have outstanding (+memq=)
 static std::vector<uint16_t> fbwrites(2u << 20);    // writes per frame-buffer byte
 
 static uint8_t *mem_at(uint32_t a) {
@@ -45,56 +46,76 @@ static uint8_t *mem_at(uint32_t a) {
 }
 
 // One Avalon-MM slave per master port: a burst is accepted with its first beat; read data
-// follows at one word per clock after `lat` clocks.
+// follows at one word per clock, each burst no sooner than `lat` clocks after it was accepted.
+// Up to g_memq read bursts may be outstanding.
 struct AvPort {
     CData *read, *write, *waitRequestn, *readDataValid;
     IData *address, *writeData, *readData;
     SData *burstCount;
     CData *byteEnable;
     int wr_left = 0; uint32_t wr_addr = 0;
-    int rd_left = 0; uint32_t rd_addr = 0; int rd_wait = 0;
+    // a wide master (hornet_ddr3 WIDE): two words a handshake, the odd one in *_hi
+    bool wide = false;
+    IData *writeDataHi = nullptr, *readDataHi = nullptr;
+    CData *byteEnableHi = nullptr;
+    struct Burst { uint32_t addr; int left; uint64_t ready; };
+    std::deque<Burst> rq;
+    uint64_t now = 0;
     uint64_t reads = 0, writes = 0, bad = 0, above2m = 0;
 
     void drive() {                         // before the rising edge
-        *waitRequestn = rd_left == 0;       // one burst at a time; writes never stall
+        *waitRequestn = (int)rq.size() < g_memq;     // writes never stall otherwise
         *readDataValid = 0;
-        if (rd_left && rd_wait == 0) {
-            uint8_t *p = mem_at(rd_addr);
+        if (!rq.empty() && rq.front().ready <= now) {
+            uint8_t *p = mem_at(rq.front().addr);
             uint32_t d = 0;
             if (p) memcpy(&d, p, 4); else bad++;
             *readDataValid = 1; *readData = d;
+            if (wide) {
+                uint8_t *q = mem_at(rq.front().addr + 4);
+                uint32_t e = 0;
+                if (q) memcpy(&e, q, 4);
+                *readDataHi = e;
+            }
         }
     }
     void edge() {                          // what the rising edge takes
-        if (rd_left) {
-            if (rd_wait) rd_wait--;
-            else { rd_addr += 4; rd_left--; }
+        if (!rq.empty() && rq.front().ready <= now) {
+            rq.front().addr += wide ? 8 : 4;
+            rq.front().left -= wide ? 2 : 1;
+            if (rq.front().left <= 0) rq.pop_front();
         }
         if (*waitRequestn && *write) {
-            uint32_t a = wr_left ? wr_addr : *address;
+            uint32_t a0 = wr_left ? wr_addr : *address;
             if (!wr_left) wr_left = *burstCount;
-            uint8_t *p = mem_at(a);
-            if (p) {
-                for (int i = 0; i < 4; i++)
-                    if (*byteEnable & (1 << i)) p[i] = (uint8_t)(*writeData >> (8 * i));
-            } else {
-                if (bad < 8) fprintf(stderr, "out-of-range write %08X\n", a);
-                bad++;
+            for (int h = 0; h < (wide ? 2 : 1); h++) {
+                uint32_t a = a0 + 4 * h;
+                uint32_t d = h ? *writeDataHi : *writeData;
+                uint8_t be = h ? *byteEnableHi : *byteEnable;
+                uint8_t *p = mem_at(a);
+                if (p) {
+                    for (int i = 0; i < 4; i++)
+                        if (be & (1 << i)) p[i] = (uint8_t)(d >> (8 * i));
+                } else {
+                    if (bad < 8) fprintf(stderr, "out-of-range write %08X\n", a);
+                    bad++;
+                }
+                // the 2 MB MAME has: count writes; above it, report the first few
+                if (a >= FB_BASE && a < FB_BASE + (2u << 20)) {
+                    for (int i = 0; i < 4; i++)
+                        if ((be & (1 << i)) && fbwrites[a - FB_BASE + i] < 65535) fbwrites[a - FB_BASE + i]++;
+                } else if (a >= FB_BASE + (2u << 20) && a < FB_BASE + (4u << 20)) {
+                    if (above2m++ < 8) fprintf(stderr, "frame-buffer write above 2 MB: %08X\n", a - FB_BASE);
+                }
+                writes++;
             }
-            // the 2 MB MAME has: count writes; above it, report the first few
-            if (a >= FB_BASE && a < FB_BASE + (2u << 20)) {
-                for (int i = 0; i < 4; i++)
-                    if ((*byteEnable & (1 << i)) && fbwrites[a - FB_BASE + i] < 65535) fbwrites[a - FB_BASE + i]++;
-            } else if (a >= FB_BASE + (2u << 20) && a < FB_BASE + (4u << 20)) {
-                if (above2m++ < 8) fprintf(stderr, "frame-buffer write above 2 MB: %08X\n", a - FB_BASE);
-            }
-            writes++;
-            wr_addr = a + 4;
-            wr_left--;
-        } else if (*waitRequestn && *read && !rd_left) {
-            rd_addr = *address; rd_left = *burstCount; rd_wait = g_memlat;
+            wr_addr = a0 + (wide ? 8 : 4);
+            wr_left -= wide ? 2 : 1;
+        } else if (*waitRequestn && *read) {
+            rq.push_back({*address, (int)*burstCount, now + 1 + g_memlat});
             reads += *burstCount;
         }
+        now++;
     }
 };
 
@@ -150,6 +171,7 @@ int main(int argc, char **argv) {
     std::string win = (s = Verilated::commandArgsPlusMatch("win=")) && *s ? std::string(s + 5) : "";
     long maxcyc = (s = Verilated::commandArgsPlusMatch("cycles=")) && *s ? atol(s + 8) : 400000000;
     if ((s = Verilated::commandArgsPlusMatch("memlat=")) && *s) g_memlat = atoi(s + 8);
+    if ((s = Verilated::commandArgsPlusMatch("memq=")) && *s) g_memq = atoi(s + 6);
     if (win.empty()) { fprintf(stderr, "+win=<dir> required\n"); return 1; }
     std::string dir = win + "/";
 
@@ -162,8 +184,19 @@ int main(int argc, char **argv) {
     auto &tmu0 = items["m_tmu[0]/m_reg/m_regs"];
 
     VTOP *t = new VTOP;
+#ifdef MEMFIFO                         // vraster: its memory FIFO's ring, a seventh master
+    AvPort ports[7] = {PORT(t, memFbWrite), PORT(t, memFbColorWrite), PORT(t, memFbAuxWrite),
+                       PORT(t, memFbColorRead), PORT(t, memFbAuxRead), PORT(t, memTex), PORT(t, memFifo)};
+    ports[0].wide = true; ports[0].writeDataHi = &t->io_memFbWrite_writeDataHi; ports[0].byteEnableHi = &t->io_memFbWrite_byteEnableHi;
+    ports[6].wide = true; ports[6].writeDataHi = &t->io_memFifo_writeDataHi; ports[6].byteEnableHi = &t->io_memFifo_byteEnableHi; ports[6].readDataHi = &t->io_memFifo_readDataHi;
+    ports[1].wide = true; ports[1].writeDataHi = &t->io_memFbColorWrite_writeDataHi; ports[1].byteEnableHi = &t->io_memFbColorWrite_byteEnableHi;
+    ports[2].wide = true; ports[2].writeDataHi = &t->io_memFbAuxWrite_writeDataHi; ports[2].byteEnableHi = &t->io_memFbAuxWrite_byteEnableHi;
+    ports[3].wide = true; ports[3].readDataHi = &t->io_memFbColorRead_readDataHi;
+    ports[4].wide = true; ports[4].readDataHi = &t->io_memFbAuxRead_readDataHi;
+#else
     AvPort ports[6] = {PORT(t, memFbWrite), PORT(t, memFbColorWrite), PORT(t, memFbAuxWrite),
                        PORT(t, memFbColorRead), PORT(t, memFbAuxRead), PORT(t, memTex)};
+#endif
     uint64_t cyc = 0;
 #ifdef TEXCHECK
     // Texel check: every texture-path request's taps, queued; every returned fetch compared
@@ -345,7 +378,7 @@ int main(int argc, char **argv) {
         }
         fprintf(stderr, "core changed bytes per 64K block: %s\n", h.c_str());
     }
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < (int)(sizeof ports / sizeof ports[0]); i++)
         fprintf(stderr, "port %d: %llu words read, %llu written, %llu out of range\n", i,
                 (unsigned long long)ports[i].reads, (unsigned long long)ports[i].writes, (unsigned long long)ports[i].bad);
 #ifdef TEXCHECK
@@ -355,6 +388,7 @@ int main(int argc, char **argv) {
             (unsigned long long)fill_words, (unsigned long long)fill_bad);
 #endif
     fprintf(stderr, "%ld writes, %llu clocks\n", nwr, (unsigned long long)cyc);
+    t->final();
     delete t;
     return total_bad ? 1 : 0;
 }

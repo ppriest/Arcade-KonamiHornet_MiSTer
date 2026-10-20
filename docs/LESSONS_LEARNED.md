@@ -329,6 +329,25 @@ FSM stuck in idle while its trigger input is visibly pulsing.
 if (vreg_we)`, and the capture blob's scroll and brightness writes arrive during the download -- all
 dropped on the board, matched on the bench, which does not hold reset across the load.
 
+### [KonamiHornet] Drain the DDR3 port on reset; count credits on the condition that issues
+
+Resetting `hornet_ddr3` with the board cut a burst mid-way and hung the HPS port (BUSY high every
+clock, `sys/f2sdram_safe_terminator.sv` explains why). The fix holds the board in reset until the
+port drains, so the drain logic decides whether the board ever runs: the read-credit counter
+added a read's beats on `A_CMD && c_rd && rd_room` while drain sent `A_CMD` back to idle without
+issuing it. That left 128 beats owed for good, so the board stayed in reset (probe K on
+30000011). When one condition issues a command and another does its bookkeeping, make them one
+wire, and test the abort at every clock of the handshake (`ddr3_tb +draintest`).
+
+### [KonamiHornet] A broken f2sdram port survives core loads: check a known-good core first
+
+After a build that cut a DDR3 burst, every core loaded later hung its DDRAM port (BUSY high on
+every clock; Hornet's screen half black, half white), including the build that had worked that
+morning (30000009). Two hardware bisect builds were spent on the broken
+port before that was checked. A reboot of the MiSTer cleared it: 30000009 and the latest build
+both drew 3D again. When a DDRAM hang appears, relaunch the last good core before
+bisecting; if it hangs too, reboot first.
+
 ### [MS32] Put the OSD Reset entries before the joystick lines in CONF_STR
 
 `"T[0],Reset;"` and `"R[0],Reset and close OSD;"` placed after `"J1,..."`/`"jn,..."` appeared in the
@@ -791,6 +810,26 @@ mirror passes a fill-then-verify test if a write tap shows nothing else writes t
   output not yet computed -- apply it to the files that need it (jotego pipelines), not everything.
   `always_comb` evaluates at time zero by IEEE 1800; `always @*` does not. A combinational signal
   holding a value its equation cannot produce from its inputs is the tell.
+- **[KonamiHornet] A bench started from a snapshot cannot see writes that never land in a memory the
+  snapshot already filled.** Konami Hornet's `ppc_port_a` built the character RAM address as 23
+  bits in a 24-bit return, so the "on port A" bit read 0 and every PPC write to character RAM was
+  dropped. `board_tb` loaded MAME's character RAM and matched MAME's pictures for thousands of frames;
+  the MiSTer drew the text from leftover SDRAM. Run lint with width warnings on
+  (`run_verilator.sh` passes `-Wno-lint`), and end a snapshot run by comparing each writable memory
+  with MAME's at a later snapshot (`board_tb +chr=`), from a snapshot before the memory is filled.
+  The same blind spot hid the Voodoo's CLUT: MAME fills it at device start and gradius4 never
+  writes it, the bench loaded it from the snapshot, and the core's started at zero -- the 3D was
+  drawn (probe V: 657 triangles a frame) and shown black. List each memory and register file a
+  snapshot loads, and give the core MAME's power-on value for every one the game may not write.
+- **[KonamiHornet] One memory, two address maps: check that the loader's and the reader's agree.**
+  The download put the CG ROM at SDRAM 0x2800000; the board's port B addressed it from word
+  0x400000 (SDRAM 0x3000000), its own comment saying 0x200000. Bank 0 read bank 1's words, bank 1
+  read stale SDRAM: textures were CG ROM words in the wrong places, polygons fine. board_tb fed
+  its port B model by the board's encoding and sdram_tb tested hornet_sdram alone, so neither
+  joined the two maps. The tell was arithmetic on a hardware dump (`/dev/mem` through Python's
+  mmap on the MiSTer): the texture word at each address was MAME's CG ROM word plus exactly
+  0x200000. A first fix wrote a 24-bit concatenation into the 23-bit address and changed nothing;
+  the width lint (`-Wno-lint` off) flags that.
 
 ## Timing closure
 
@@ -1029,6 +1068,12 @@ ack address that is also an input port must acknowledge on writes only.
 - **[GX] Quartus 17 rejects `for (genvar i = ...)`** (`Error (10170)`); declare `genvar i;` before
   the `generate`.
 - **`quartus_map` alone is a fast pre-check** for whether a change elaborates.
+- **[KonamiHornet] A function returning a part select of a module-level unpacked array element
+  (`return s_x0[k][9:1];`) crashes Quartus 17's elaborator** (`Internal Error: Sub-system: VRFX,
+  veriname_elab.cpp, Line: 836`) with no file or line. Verilator accepts it. Found by running
+  `quartus_map` on a worktree of each commit since the last good fit, then removing constructs;
+  a comb array (`always_comb sw0[k] = s_x0[k][9:1];`) elaborates. Functions reading module-level
+  scalars and packed vectors are fine.
 
 ## Debug instrumentation: how not to fool yourself
 

@@ -1,0 +1,125 @@
+--- a/src/voodoo/Config.scala
++++ b/src/voodoo/Config.scala
+@@ -32,6 +32,10 @@
+     texFillXorIndex: Boolean = false,
+     texFillRequestWindow: Int = 16,
+     packedTexLayout: Boolean = true,
++    // a game that keeps tLOD's lodmin = lodmax: the level is the clamp's, no gradient
++    fixedLod: Boolean = false,
++    // texture formats the texel decoder handles; empty for all
++    texFormats: Seq[Int] = Nil,
+     trace: TraceConfig = TraceConfig()
+ )
+ 
+--- a/src/voodoo/texture/Tmu.scala
++++ b/src/voodoo/texture/Tmu.scala
+@@ -143,7 +143,7 @@
+         out.msbPos := stageRecipPrep.payload.msbPos
+         out.perspectiveEnable := stageRecipPrep.payload.perspectiveEnable
+         out.clampToZero := stageRecipPrep.payload.clampToZero
+-        out.perspLodAdjust := perspLodAdjustPre
++        out.perspLodAdjust := (if (c.fixedLod) S(0, 16 bits) else perspLodAdjustPre)
+         out.dSdX := stageRecipPrep.payload.dSdX
+         out.dTdX := stageRecipPrep.payload.dTdX
+         out.dSdY := stageRecipPrep.payload.dSdY
+@@ -204,7 +204,8 @@
+       (dSdXRaw * dSdXRaw).resize(64 bits).asUInt + (dTdXRaw * dTdXRaw).resize(64 bits).asUInt
+     val tempdy =
+       (dSdYRaw * dSdYRaw).resize(64 bits).asUInt + (dTdYRaw * dTdYRaw).resize(64 bits).asUInt
+-    val tempLOD = Mux(tempdx > tempdy, tempdx, tempdy).resize(64 bits)
++    val tempLOD =
++      if (c.fixedLod) U(0, 64 bits) else Mux(tempdx > tempdy, tempdx, tempdy).resize(64 bits)
+ 
+     val stageGrad = stageA
+       .translateWith {
+--- a/src/voodoo/texture/TmuTexelDecoder.scala
++++ b/src/voodoo/texture/TmuTexelDecoder.scala
+@@ -58,27 +58,28 @@
+       (clampToU8(rRaw), clampToU8(gRaw), clampToU8(bRaw))
+     }
+ 
++    def keep(f: Int) = c.texFormats.isEmpty || c.texFormats.contains(f)
+     switch(format) {
+-      is(Tmu.TextureFormat.RGB332) {
++      if (keep(Tmu.TextureFormat.RGB332)) is(Tmu.TextureFormat.RGB332) {
+         decoded.r := expandTo8(texelByte(7 downto 5).asUInt, 3)
+         decoded.g := expandTo8(texelByte(4 downto 2).asUInt, 3)
+         decoded.b := expandTo8(texelByte(1 downto 0).asUInt, 2)
+         decoded.a := U(255, 8 bits)
+       }
+-      is(Tmu.TextureFormat.YIQ422) {
++      if (keep(Tmu.TextureFormat.YIQ422)) is(Tmu.TextureFormat.YIQ422) {
+         val (r, g, b) = nccDecode(texelByte, ncc)
+         decoded.r := r; decoded.g := g; decoded.b := b; decoded.a := U(255, 8 bits)
+       }
+-      is(Tmu.TextureFormat.A8) {
++      if (keep(Tmu.TextureFormat.A8)) is(Tmu.TextureFormat.A8) {
+         val dat = texelByte.asUInt
+         decoded.r := dat; decoded.g := dat; decoded.b := dat; decoded.a := dat
+       }
+-      is(Tmu.TextureFormat.I8) {
++      if (keep(Tmu.TextureFormat.I8)) is(Tmu.TextureFormat.I8) {
+         val intensity = texelByte.asUInt
+         decoded.r := intensity; decoded.g := intensity; decoded.b := intensity;
+         decoded.a := U(255, 8 bits)
+       }
+-      is(Tmu.TextureFormat.AI44) {
++      if (keep(Tmu.TextureFormat.AI44)) is(Tmu.TextureFormat.AI44) {
+         val alpha = texelByte(7 downto 4).asUInt
+         val intensity = texelByte(3 downto 0).asUInt
+         decoded.r := expandTo8(intensity, 4)
+@@ -86,46 +87,46 @@
+         decoded.b := expandTo8(intensity, 4)
+         decoded.a := expandTo8(alpha, 4)
+       }
+-      is(Tmu.TextureFormat.P8) {
++      if (keep(Tmu.TextureFormat.P8)) is(Tmu.TextureFormat.P8) {
+         decoded.r := paletteColor(23 downto 16).asUInt
+         decoded.g := paletteColor(15 downto 8).asUInt
+         decoded.b := paletteColor(7 downto 0).asUInt
+         decoded.a := U(255, 8 bits)
+       }
+-      is(Tmu.TextureFormat.ARGB8332) {
++      if (keep(Tmu.TextureFormat.ARGB8332)) is(Tmu.TextureFormat.ARGB8332) {
+         decoded.a := texelData(15 downto 8).asUInt
+         decoded.r := expandTo8(texelData(7 downto 5).asUInt, 3)
+         decoded.g := expandTo8(texelData(4 downto 2).asUInt, 3)
+         decoded.b := expandTo8(texelData(1 downto 0).asUInt, 2)
+       }
+-      is(Tmu.TextureFormat.AYIQ8422) {
++      if (keep(Tmu.TextureFormat.AYIQ8422)) is(Tmu.TextureFormat.AYIQ8422) {
+         val (r, g, b) = nccDecode(texelData(7 downto 0), ncc)
+         decoded.r := r; decoded.g := g; decoded.b := b; decoded.a := texelData(15 downto 8).asUInt
+       }
+-      is(Tmu.TextureFormat.RGB565) {
++      if (keep(Tmu.TextureFormat.RGB565)) is(Tmu.TextureFormat.RGB565) {
+         decoded.r := expandTo8(texelData(15 downto 11).asUInt, 5)
+         decoded.g := expandTo8(texelData(10 downto 5).asUInt, 6)
+         decoded.b := expandTo8(texelData(4 downto 0).asUInt, 5)
+         decoded.a := U(255, 8 bits)
+       }
+-      is(Tmu.TextureFormat.ARGB1555) {
++      if (keep(Tmu.TextureFormat.ARGB1555)) is(Tmu.TextureFormat.ARGB1555) {
+         decoded.a := expandTo8(texelData(15 downto 15).asUInt, 1)
+         decoded.r := expandTo8(texelData(14 downto 10).asUInt, 5)
+         decoded.g := expandTo8(texelData(9 downto 5).asUInt, 5)
+         decoded.b := expandTo8(texelData(4 downto 0).asUInt, 5)
+       }
+-      is(Tmu.TextureFormat.ARGB4444) {
++      if (keep(Tmu.TextureFormat.ARGB4444)) is(Tmu.TextureFormat.ARGB4444) {
+         decoded.a := expandTo8(texelData(15 downto 12).asUInt, 4)
+         decoded.r := expandTo8(texelData(11 downto 8).asUInt, 4)
+         decoded.g := expandTo8(texelData(7 downto 4).asUInt, 4)
+         decoded.b := expandTo8(texelData(3 downto 0).asUInt, 4)
+       }
+-      is(Tmu.TextureFormat.AI88) {
++      if (keep(Tmu.TextureFormat.AI88)) is(Tmu.TextureFormat.AI88) {
+         val alpha = texelData(15 downto 8).asUInt
+         val intensity = texelData(7 downto 0).asUInt
+         decoded.r := intensity; decoded.g := intensity; decoded.b := intensity; decoded.a := alpha
+       }
+-      is(Tmu.TextureFormat.AP88) {
++      if (keep(Tmu.TextureFormat.AP88)) is(Tmu.TextureFormat.AP88) {
+         decoded.r := paletteColor(23 downto 16).asUInt
+         decoded.g := paletteColor(15 downto 8).asUInt
+         decoded.b := paletteColor(7 downto 0).asUInt

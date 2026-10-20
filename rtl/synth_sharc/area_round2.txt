@@ -1,0 +1,10 @@
+no_loopend   core ALUTs 37006 (own 27624)  alu 9250
+no_fsirq     core ALUTs 39800 (own 30433)  alu 9235
+no_tailirq   core ALUTs 39116 (own 29746)  alu 9238
+no_htail     core ALUTs 34921 (own 25668)  alu 9121
+no_counters  core ALUTs 39287 (own 29955)  alu 9200
+no_iopw      core ALUTs 38995 (own 29545)  alu 9318
+no_ureg      core ALUTs 32610 (own 23406)  alu 9072
+no_getureg   core ALUTs 39893 (own 30586)  alu 9175
+no_pmod      core ALUTs 38924 (own 29578)  alu 9214
+no_restore   core ALUTs 41807 (own 32487)  alu 9188

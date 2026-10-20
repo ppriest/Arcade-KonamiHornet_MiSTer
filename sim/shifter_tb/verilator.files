@@ -1,0 +1,3 @@
+rtl/cpu/sharc/sharc_fp_pkg.sv
+rtl/cpu/sharc2/sharc2_pkg.sv
+sim/shifter_tb/tb_shifter.sv
