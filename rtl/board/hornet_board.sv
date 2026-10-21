@@ -159,6 +159,15 @@ module hornet_board #(
     input  logic [5:0]  dsp_dbg_widx,
     input  logic [63:0] dsp_dbg_wdata,
 
+    // the sound board on the HPS (KonamiHornet.sv, hornet_sndbridge): each PPC write to a K056800
+    // host register (0-7) or to SNDRES (8, the data's bit 7), and the server's reply registers,
+    // which stand in for the board's stand-in while snd_live
+    output logic        snd_wr,
+    output logic [3:0]  snd_wreg,
+    output logic [7:0]  snd_wdata,
+    input  logic [15:0] snd_reply,         // {snd_to_host[1], snd_to_host[0]}
+    input  logic        snd_live,
+
     // board events for the harness
     output logic        ev_dsp_reset,      // the PPC released the SHARC's RESET: it boots
     output logic        ev_swapcmd,        // swapbufferCMD written to the Voodoo
@@ -477,7 +486,7 @@ always_ff @(posedge clk) begin
                 end else if (d_snd) begin
                     logic [2:0] o;
                     o = {d_addr[2], lane(d_be)};
-                    dv_rdata <= {4{(o < 3'd2) ? snd_to_host[o[0]] : 8'h0}};
+                    dv_rdata <= {4{(o >= 3'd2) ? 8'h0 : snd_live ? snd_reply[8*o[0] +: 8] : snd_to_host[o[0]]}};
                 end
             end
         end
@@ -778,6 +787,7 @@ always_ff @(posedge clk) begin
     if (reset) begin
         irq0 <= 1'b0;
         ev_dsp_reset <= 1'b0;
+        snd_wr <= 1'b0;
         xs_state <= XS_IDLE;
         // power-on: konppc's init (konppc.cpp:49-58), the SHARC held in reset (hornet.cpp:1352)
         sh_bank <= 1'b0; dsp_state <= 8'h80; enable_3d <= 1'b0; dsp_run <= 1'b0;
@@ -790,6 +800,7 @@ always_ff @(posedge clk) begin
         for (int i = 0; i < 64; i++) k037122_reg[i] <= 32'h0;
     end else begin
         ev_dsp_reset <= 1'b0;
+        snd_wr <= 1'b0;
         if (run && d_req && d_we && !d_pa[23]) begin
             if (d_comm && cg_ok) begin
                 // konppc.cpp cgboard_dsp_comm_w_ppc
@@ -822,6 +833,13 @@ always_ff @(posedge clk) begin
             end
             if (d_sysw && {d_addr[15:2], lane(d_be)} == 16'd4)
                 snd_run <= d_wdata[8*(3 - lane(d_be)) + 7];                   // SNDRES
+            if (d_snd) begin
+                snd_wr <= 1'b1; snd_wreg <= {1'b0, d_addr[2], lane(d_be)};
+                snd_wdata <= d_wdata[8*(3 - lane(d_be)) +: 8];
+            end
+            if (d_sysw && {d_addr[15:2], lane(d_be)} == 16'd4) begin
+                snd_wr <= 1'b1; snd_wreg <= 4'd8; snd_wdata <= d_wdata[8*(3 - lane(d_be)) +: 8];
+            end
         end
         // the stand-in's timer tick
         if (!snd_run) snd_tick <= 18'd0;

@@ -4,7 +4,7 @@ A MiSTer FPGA core for Konami's Hornet arcade hardware (MAME's `konami/hornet.cp
 Quartus Prime 17.0.2 Lite for the DE10-nano.
 
 **Status: in development. Gradius IV boots to attract and into a game on a DE10-nano, 2D and 3D
-drawn; not yet played through, and no sound.**
+drawn, with sound from the MiSTer's ARM; not yet played through.**
 
 ## Contents
 
@@ -32,6 +32,13 @@ drawn; not yet played through, and no sound.**
 
 No release yet.
 
+- `2779c02` (deployed as `KonamiHornet_30000017.rbf`): sound. The sound board (68000, K056800,
+  RF5C400) runs on the HPS in `sw/arcsnd`, alongside Hyper NeoGeo 64's; `hornet_sndbridge`
+  passes the PPC's writes to it through DDR3. Heard on the DE10-nano; the server's log shows the
+  game's commands arriving and no audio gaps, its 68000 using about half an ARM core.
+- `c0e55dc`: fast ROM loading from DDR3 (`sim/rom_loader_tb`): the boot's WARNING screen about
+  25 s after launch on the DE10-nano. The black screens of the builds before it were the HDMI
+  scaler's clock missing timing by 0.5 ns (fitter seed 2 cleared it).
 - `a034e0d`: attract at 97% of full frame rate on the DE10-nano (9 frames a second before): the
   Voodoo's DDR3 masters move 64 bits a clock, and a texture miss fills up to eight tiles in one
   burst. In-game sections still slow down.
@@ -59,7 +66,7 @@ Sets with an `.mra` in `releases/`. None is verified playable yet.
 
 | Name | Year | Manufacturer | Controls | Notes |
 |-|-|-|-|-|
-| Gradius IV: Fukkatsu (ver JAC) | 1998 | Konami | 8-way joystick, three buttons, two players | attract and a game start; no sound |
+| Gradius IV: Fukkatsu (ver JAC) | 1998 | Konami | 8-way joystick, three buttons, two players | attract and a game start, with sound |
 
 ### Not yet
 
@@ -87,7 +94,7 @@ Sets with an `.mra` in `releases/`. None is verified playable yet.
 | K033906 | the Voodoo's PCI configuration | written here from MAME's model |
 | M48T58 | 8 KB NVRAM and clock | written here; the clock from MAME's timekeeper, set from the MiSTer's time; saved to the `.nvm` file |
 | konppc glue, sysreg | shared RAM, comm registers, interrupts, inputs | written here from `hornet.cpp` and `konppc.cpp` |
-| MC68000, K056800, RF5C400 | sound | not built; a stand-in answers the PPC's sound handshake |
+| MC68000, K056800, RF5C400 | sound | on the HPS (`sw/arcsnd`): Musashi and MAME's RF5C400 and board logic; `rtl/mister/hornet_sndbridge.sv` carries the PPC's writes and the board's replies through DDR3 |
 | X76F041 | security EEPROM | not built |
 
 ### Video timing
@@ -114,6 +121,10 @@ A 128 MB SDRAM module is required (the core uses 28 MB of it).
   sorts above every `Arcade-KonamiHornet_*.rbf`
 * Take the `*.mra` files from `releases/` and put them in `_Arcade`
 * Put the MAME `gradius4` set in `games/mame`
+* For sound: unzip `releases/arcsnd_<YYYYMMDD>.zip` onto the SD card's root (it holds
+  `games/arcsnd/arcsnd` and `Scripts/arcsnd.sh`), then run `arcsnd` from the Scripts menu, or
+  add `/media/fat/Scripts/arcsnd.sh start` to `linux/user-startup.sh` to start it at boot. It
+  waits in the background and plays whenever a Hornet (or Hyper NeoGeo 64) set is loaded
 
 To run a development build instead: `python scripts/build_staged.py`, then `python scripts/deploy.py`
 with a `mister.env` (see `scripts/deploy.py`).
@@ -139,9 +150,15 @@ Both players have the same layout on the first and second controllers.
 Known issues:
 
 - **Not yet played through on hardware; gameplay is unverified beyond the first stage's start.**
-- **No sound** (the 68000, K056800 and RF5C400 are not built).
-- The ROMs load over the slow path; fast loading through DDR3 is not built.
-- Flip screen is not built, and the security EEPROM is absent.
+- **Sound needs `arcsnd` running on the MiSTer** (Installation). Without it the bridge falls
+  back to the stand-in that answers the PPC's sound handshake, so the game should boot silent
+  (not tried on this build).
+- The first launch after deploying `c0e55dc` came up on noise (the image was not in DDR3); every
+  launch since has loaded. Not understood yet.
+- **In-game sections slow down**, to half rate at times. Probes on the board point at three
+  limits in different scenes: the PPC's memory port (no data cache), the SHARC's geometry, and the
+  Voodoo's texture fills on full-screen layers.
+- The security EEPROM is absent.
 - **The first boot stops at "RTC CHECKSUM ERROR! ... PRESS TEST SWITCH TO CONTINUE"**, as MAME's does with the set's NVRAM image: press Test (L). The settings are then saved to the `.nvm` file.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be
@@ -152,20 +169,20 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 * DIP switches from the `.mra` (`DIP;` in the OSD): done
 * Inputs: two players, three buttons, service, test; done
-* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): not yet
-* HDMI scaling (integer scale, crop, crop offset): not yet
-* HDMI rotation (orientation): n/a (horizontal monitor)
-* Flip screen, HDMI and analog, from the OSD or the DIP (fake DIP where the game has none): not yet
-* HDMI-only options hidden under direct video: not yet
+* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): no (out of scope, `docs/ROADMAP.md`)
+* HDMI scaling (integer scale, crop, crop offset): no (out of scope)
+* HDMI rotation (orientation): no (out of scope; `rtl/mister/hornet_rotate.sv` is written but not built)
+* Flip screen: no (out of scope)
+* HDMI-only options hidden under direct video: yes
 * Peripheral menus shown only for games that use them: n/a (no peripherals)
 * Rotary joysticks: n/a
 * Light guns: n/a
-* Audio mix (Mono, None, 25%, 50%): not yet (no sound)
-* Hiscore saving (`hiscore.v`, with autosave): not yet
+* Audio mix (Mono, None, 25%, 50%): no (out of scope)
+* Hiscore saving: no (out of scope)
 * NVRAM / EEPROM saved to the `.nvm` file: the M48T58, a second after the game's last write (not yet checked on hardware); no EEPROM
-* Fast ROM loading via DDR: not yet
+* Fast ROM loading via DDR: yes (the boot's WARNING screen about 25 s after launch)
 * Pause (with CPU suspended): done (the PPC stops; the SHARC, Voodoo and picture keep running)
-* Sound: not yet
+* Sound: yes, from the HPS (`arcsnd`)
 * Savestates (optional): not yet
 * Cheats (optional): not yet
 
@@ -173,26 +190,27 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 - [x] Boot to attract on hardware
 - [ ] Play through on hardware
-- [ ] Fast ROM loading through DDR3
-- [ ] Flip screen
+- [x] Fast ROM loading through DDR3
+- [ ] Full frame rate in game
 - [ ] Security EEPROM (X76F041) and JVS
-- [ ] Sound: fx68k, K056800, RF5C400
+- [x] Sound: a hybrid core, the sound board emulated on the HPS
 
 ### Resource usage
 
-The release revision `KonamiHornet` at `c9ec65b` (default seed) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7; setup and hold met on every clock (worst setup +0.168 ns, the HDMI scaler):
+The release revision `KonamiHornet` at `c0e55dc` (fitter seed 2) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7; setup met on every clock (worst +0.343 ns, the HDMI scaler). With the
+device this full the HDMI scaler's paths are sensitive to placement: the default seed missed by
+0.57 ns.
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 39,214 | 41,910 |
-| Block memory bits | 4,370,788 | 5,662,720 |
+| Logic (ALMs) | 39,991 | 41,910 |
+| Block memory bits | 4,370,789 | 5,662,720 |
 | RAM blocks | 543 | 553 |
 | DSP blocks | 93 | 112 |
 | PLLs | 3 | 6 |
 
-Logic is the resource to watch: the SHARC is the largest block, and adding sound has to fit in
-what is left.
+Logic and RAM blocks are both nearly full; the SHARC is the largest block.
 
 ## AI Attestation
 
@@ -233,6 +251,8 @@ where they matter.
   for the K037122 — for the driver and device emulations that are this core's specification.
 - **fayalalebrun** for [SpinalVoodoo](https://github.com/fayalalebrun/SpinalVoodoo), the Voodoo
   this project ran in simulation before `vraster`; it is not in the bitstream.
+- **Karl Stenerud** for [Musashi](https://github.com/kstenerud/Musashi), the 68000 in `arcsnd`;
+  Ville Linde for MAME's RF5C400 and K056800, which `arcsnd` runs.
 
 ## Layout
 
@@ -246,6 +266,7 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 | `docs` | roadmap, workflow, release process, kludges, hacks, lessons |
 | `sim` | ModelSim and Verilator testbenches |
 | `scripts` | build, deploy, capture and verification tooling |
+| `sw/arcsnd` | the sound server on the HPS; `PROVENANCE.md` lists its sources |
 | `debug` | reference captures from MAME used as ground truth (gitignored) |
 | `roms` | your own MAME sets (gitignored, never committed) |
 

@@ -108,11 +108,16 @@ memory FIFO (a 64K-entry ring in DDR3, `vraster`): the 2048-entry FIFO alone nee
 | Voodoo 1 | SpinalVoodoo, generated Verilog vendored; no binary release while unlicensed (user decision) | github.com/fayalalebrun/SpinalVoodoo (no licence) |
 | K037122 | written from MAME's model | `src/mame/konami/k037122.cpp` |
 | K033906, konppc glue | written from MAME's model | `k033906.cpp`, `konppc.cpp` |
-| 68000 | fx68k | a MiSTer core's `rtl/FX68K`, to be located and read before vendoring |
-| RF5C400 | written from MAME's model; jtpcm568 as structure | `src/devices/sound/rf5c400.cpp` |
+| 68000 | Musashi, on the HPS | `sw/arcsnd/PROVENANCE.md` |
+| RF5C400 | MAME's, on the HPS | `src/devices/sound/rf5c400.cpp` |
 | K056800, M48T58, X76F041 | written from MAME's model | device files |
 
 ## Design decisions
+
+**No standard-feature work for this core (user decision).** Flip screen, HDMI rotation, HDMI
+scaling and crop, CRT Adjust, hiscore and audio mix are out: the device has no room, and the effort
+goes to the frame rate and sound. `rtl/mister/hornet_rotate.sv` stays in the tree, unbuilt
+(`MISTER_FB` off).
 
 **Follow MAME, including where MAME is wrong, and write down every place that is**
 (`docs/MAME_KLUDGES.md`).
@@ -211,9 +216,11 @@ clocks on average, 174 at worst (probe D).
 
 Open: play-through on hardware, release-revision timing (the HDMI scaler clock by picoseconds; a
 clk_sys hold path in the last stp build), flip screen, fast ROM loading, the security EEPROM and
-JVS (gradius4's boot does not select the X76F041), sound (Phase 3).
+JVS (gradius4's boot does not select the X76F041).
 
-**Phase 3 — Sound.** fx68k, K056800, RF5C400.
+**Phase 3 — Sound. Done** (`2779c02`): the sound board on the HPS (`sw/arcsnd`, Musashi and
+MAME's RF5C400 and K056800), fed through DDR3 by `rtl/mister/hornet_sndbridge.sv`; the FPGA had
+no room for fx68k. Heard on the DE10-nano.
 
 **Phase 4 — nbapbp and the clones.** JVS for nbapbp.
 

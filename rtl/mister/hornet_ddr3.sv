@@ -250,7 +250,7 @@ assign dbg_cmd = {DDRAM_BUSY, DDRAM_RD, DDRAM_WE, w_out, b_left, w_left, DDRAM_B
                   c_rd, 3'(g), 2'(as), tq_any, t_on, 10'(r_out)};
 
 // debug (the stp revision's probe D): {a read's latency valid, its latency (accepted to first beat,
-// saturating), a command chosen, its master, a beat in, a write beat out, a read accepted, a read
+// saturating at 2047), a command chosen, its master, a beat in, a write beat out, a read accepted, a read
 // waiting for FIFO room, DDRAM_BUSY, the arbiter state}
 logic [15:0] d_now;
 logic [15:0] d_ts [16];
@@ -273,7 +273,7 @@ always_ff @(posedge clk) begin
     end
     if (reset) begin d_wp <= '0; d_rp <= '0; d_left <= '0; end
 end
-assign dbg = {d_lv, d_lat, as == A_IDLE && pick_v, 3'(pick), DDRAM_DOUT_READY, DDRAM_WE && !DDRAM_BUSY,
+assign dbg = {d_lv, d_lat[10:0] | {11{d_lat[11]}}, as == A_IDLE && pick_v, 4'(pick), DDRAM_DOUT_READY, DDRAM_WE && !DDRAM_BUSY,
               as == A_RD && !DDRAM_BUSY, as == A_CMD && c_rd && !rd_room, DDRAM_BUSY, as};
 
 // read beats outstanding: issued, less those taken from the FIFO

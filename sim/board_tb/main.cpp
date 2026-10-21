@@ -747,7 +747,7 @@ int main(int argc, char **argv) {
             uint32_t g = t->ddr_dbg;
             unsigned as = g & 3;
             if (g & 4) dd[0]++;                                // BUSY
-            if (as == 0 && !(g & 0x400)) dd[1]++;             // idle
+            if (as == 0 && !(g & 0x800)) dd[1]++;             // idle
             if (g & 8) dd[2]++;                                // waiting for return-FIFO room
             if (as == 2 && (g & 4)) dd[3]++;                   // a read waiting on BUSY
             if (as == 3) dd[4]++;                              // writing
@@ -755,12 +755,12 @@ int main(int argc, char **argv) {
             if (g & 0x10) dd[6]++;                             // reads accepted
             if (g & 0x20) dd[7]++;                             // write beats
             if (g & 0x40) dd[8]++;                             // beats in
-            if (g & (1u << 23)) { dd[9] += (g >> 11) & 0xFFF; dd[10]++; }
+            if (g & (1u << 23)) { dd[9] += (g >> 12) & 0x7FF; dd[10]++; }
             // vraster: clocks a texture fill holds the pipeline, fills, clocks drawing triangles
             if (t->v_dbg & 0x20) { dd[11]++; if (!tf_q) dd[12]++; }
             tf_q = t->v_dbg & 0x20;
             if (((t->v_dbg >> 10) & 15) == 8) dd[13]++;
-            if (g & 0x400) dc[(g >> 7) & 7]++;
+            if (g & 0x800) dc[(g >> 7) & 7]++;
         }
         if (t->vid_overrun) {
             overruns++;

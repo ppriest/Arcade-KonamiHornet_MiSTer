@@ -52,14 +52,25 @@ assign BUTTONS = 0;
 
 wire [1:0] ar = status[122:121];
 
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+// HDMI rotation (hornet_rotate): Auto is Off, gradius4 being horizontal; 3:4 when rotated
+wire [1:0] rot_sel    = status[64:63];
+`ifdef MISTER_FB
+wire       rotate_en  = rot_sel[1];
+`else
+wire       rotate_en  = 1'b0;                  // hornet_rotate not built (MISTER_FB off)
+`endif
+wire       rotate_ccw = rot_sel == 2'd3;
+assign VIDEO_ARX = (!ar) ? (rotate_en ? 12'd3 : 12'd4) : (ar - 1'd1);
+assign VIDEO_ARY = (!ar) ? (rotate_en ? 12'd4 : 12'd3) : 12'd0;
 
 `include "build_id.v"
 localparam CONF_STR = {
 	"KonamiHornet;;",
 	"-;",
-	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"H5O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+`ifdef MISTER_FB
+	"H5O[64:63],Orientation,Auto,Off,CW,CCW;",
+`endif
 	"-;",
 	"DIP;",
 	"-;",
@@ -70,6 +81,7 @@ localparam CONF_STR = {
 };
 
 wire forced_scandoubler;
+wire direct_video;
 wire   [1:0] buttons;
 wire [127:0] status;
 wire  [31:0] joystick_0, joystick_1;
@@ -96,7 +108,8 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask(16'd0),
+	.status_menumask({10'd0, direct_video, 5'd0}),
+	.direct_video(direct_video),
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -136,6 +149,34 @@ wire reset = RESET | status[0] | buttons[1];
 wire rom_dl = ioctl_download && ioctl_index == 16'd0;
 wire nv_dl  = ioctl_download && ioctl_index == 16'd4;
 
+// Fast loading: an index-0 download that delivers no bytes put the image in DDR3 at 0x30000000
+// (the .mra's address=); when that download ends hornet_rom_loader replays it into the byte path
+// below, once per download (or at the next reset release). A .nvm loaded since keeps the M48T58.
+wire        ldr_active, ldr_wr;
+wire        ddr_idle;
+wire [26:0] ldr_addr;
+wire  [7:0] ldr_dout;
+wire        img_dl   = rom_dl || ldr_active;
+wire        img_wr   = ldr_active ? ldr_wr : ioctl_wr;
+wire [26:0] img_addr = ldr_active ? ldr_addr : ioctl_addr;
+wire  [7:0] img_dout = ldr_active ? ldr_dout : ioctl_dout;
+reg rom_dl_q, dl0_seen, dl_seen_wr, ldr_done, ldr_pending, ldr_start, nv_seen;
+wire ldr_due = ldr_pending && dl0_seen && !dl_seen_wr && !ldr_done;
+always @(posedge clk_sys) begin
+	ldr_start <= 1'b0;
+	rom_dl_q <= rom_dl;
+	if (rom_dl && !rom_dl_q) begin dl0_seen <= 1'b1; dl_seen_wr <= 1'b0; ldr_done <= 1'b0; nv_seen <= 1'b0; end
+	else if (rom_dl && ioctl_wr) dl_seen_wr <= 1'b1;
+	if (nv_dl) nv_seen <= 1'b1;
+	// armed by a reset or by the end of an index-0 download (the HPS need not reset the core after
+	// putting the image in DDR3: without this the board ran on what the SDRAM held)
+	if (reset || (rom_dl_q && !rom_dl)) ldr_pending <= 1'b1;
+	else if (ldr_pending && !ioctl_download && !ldr_active && ddr_idle) begin
+		ldr_pending <= 1'b0;
+		if (ldr_due) begin ldr_start <= 1'b1; ldr_done <= 1'b1; end
+	end
+end
+
 // DIP switches
 reg [7:0] dsw = 8'h7B;                  // gradius4's defaults (hornet.cpp INPUT_PORTS gradius4)
 always @(posedge clk_sys) if (ioctl_wr && ioctl_index == 16'd254 && ioctl_addr == 27'd0) dsw <= ioctl_dout;
@@ -156,7 +197,7 @@ function automatic [26:0] dl_map(input [26:0] a);       // image offset -> SDRAM
 	else                      dl_map = 27'h2800000 + (a - 27'h0C00000);
 endfunction
 
-wire [26:0] dl_a = dl_map(ioctl_addr);
+wire [26:0] dl_a = dl_map(img_addr);
 
 always @(posedge clk_sys) begin
 	ld_we <= 1'b0;
@@ -164,14 +205,16 @@ always @(posedge clk_sys) begin
 	if (nv_dl && ioctl_wr && !ioctl_addr[26:13]) begin
 		ld_we <= 1'b1; ld_addr <= {4'h0, ioctl_addr[12:0]}; ld_data <= {24'h0, ioctl_dout};
 	end
-	if (rom_dl && ioctl_wr) begin
-		if (ioctl_addr >= 27'h1C00000) begin
-			ld_we <= 1'b1; ld_addr <= {4'h0, ioctl_addr[12:0]}; ld_data <= {24'h0, ioctl_dout};
-		end else if (!ioctl_addr[0]) dl_hi <= ioctl_dout;
+	if (img_dl && img_wr) begin
+		if (img_addr >= 27'h1C00000 && img_addr < 27'h1C02000) begin
+			if (!(ldr_active && nv_seen)) ld_we <= 1'b1;
+			ld_addr <= {4'h0, img_addr[12:0]}; ld_data <= {24'h0, img_dout};
+		end else if (img_addr >= 27'h1C00000) ;             // the sound board's ROMs: the HPS reads them
+		else if (!img_addr[0]) dl_hi <= img_dout;
 		else begin
 			d_we <= 1'b1;
 			d_addr <= dl_a[26:1];
-			d_din <= {dl_hi, ioctl_dout};
+			d_din <= {dl_hi, img_dout};
 		end
 	end
 end
@@ -181,8 +224,8 @@ assign ioctl_wait = d_we;
 // ... and stays in reset until the DDR3 port has finished what the board started (a transaction
 // cut short there hangs the HPS port: hornet_ddr3 drain)
 reg board_reset = 1'b1;
-wire ddr_idle;
-always @(posedge clk_sys) board_reset <= reset || rom_dl || nv_dl || !pll_locked || (board_reset && !ddr_idle);
+always @(posedge clk_sys) board_reset <= reset || rom_dl || nv_dl || !pll_locked || ldr_due || ldr_start || ldr_active
+                                         || (board_reset && !ddr_idle);
 // the M48T58's clock takes the host's time as the board leaves reset (MAME: once, at start)
 reg board_reset_q = 1'b1;
 always @(posedge clk_sys) board_reset_q <= board_reset;
@@ -243,21 +286,25 @@ assign v_ring_off = 1'b0;
 wire [31:0] ppc_pc;
 wire [23:0] dsp_pc;
 wire [7:0]  vid_r, vid_g, vid_b;
+wire        snd_wr, snd_live;
+wire [3:0]  snd_wreg;
+wire [7:0]  snd_wdata;
+wire [15:0] snd_reply;
 
-// the Voodoo's masters, in hornet_ddr3's order: fbw, fbcw, fbaw, fbcr, fbar, tex, its memory
-// FIFO's ring, then port S (the last is served first)
-wire [7:0]       m_read, m_write, m_waitn, m_rvalid;
-wire [7:0][31:0] m_addr, m_wdata;
-wire [7:0][10:0] m_burst;
-wire [7:0][3:0]  m_be;
+// hornet_ddr3's masters: the Voodoo's fbw, fbcw, fbaw, fbcr, fbar, tex and its memory FIFO's
+// ring, the HDMI rotator, then port S (the last is served first)
+wire [8:0]       m_read, m_write, m_waitn, m_rvalid;
+wire [8:0][31:0] m_addr, m_wdata;
+wire [8:0][10:0] m_burst;
+wire [8:0][3:0]  m_be;
 wire [31:0]      m_rdata;
 // wide masters: the fast fill (0), the span writes (1, 2) and reads (3, 4), the memory FIFO's
-// ring (6), port S (7); the texture master (5) narrow
-localparam logic [7:0] DDR_WIDE = 8'b1101_1111;
-wire [7:0][3:0]  m_be_hi;
-wire [7:0][31:0] m_wdata_hi;
-assign m_be_hi[5:3] = '0; assign m_be_hi[7] = '0;
-assign m_wdata_hi[5:3] = '0; assign m_wdata_hi[7] = '0;
+// ring (6), the rotator (7), port S (8); the texture master (5) narrow
+localparam logic [8:0] DDR_WIDE = 9'b1_1101_1111;
+wire [8:0][3:0]  m_be_hi;
+wire [8:0][31:0] m_wdata_hi;
+assign m_be_hi[5:3] = '0; assign m_be_hi[8] = '0;
+assign m_wdata_hi[5:3] = '0; assign m_wdata_hi[8] = '0;
 wire [31:0]      m_rdata_hi;
 
 // players 1 and 2: J1's bits 0-3 right, left, down, up; 4-6 Shot, Missile, Power Up; 7 Start,
@@ -323,20 +370,21 @@ hornet_board board (
 	.ppc_dbg_we(1'b0), .ppc_dbg_wsel(6'd0), .ppc_dbg_wdata(32'h0),
 	.dsp_dbg_exec(dsp_exec), .dsp_dbg_pc(dsp_pc), .dsp_dbg_op(), .dsp_dbg_sel(6'd0), .dsp_dbg_val(),
 	.ev_dsp_idle(dsp_idle),
+	.snd_wr, .snd_wreg, .snd_wdata, .snd_reply, .snd_live,
 	.dsp_dbg_pm_we(1'b0), .dsp_dbg_pm_addr(15'h0), .dsp_dbg_pm_wdata(48'h0),
 	.dsp_dbg_dm_we(1'b0), .dsp_dbg_dm_addr(15'h0), .dsp_dbg_dm_wdata(32'h0),
 	.dsp_dbg_we(1'b0), .dsp_dbg_wsel(8'd0), .dsp_dbg_widx(6'd0), .dsp_dbg_wdata(64'h0)
 );
 
-// port S as master 7: frame-buffer offsets onto vraster's FB_BASE
-assign m_read[7]  = s_read;
-assign m_write[7] = 1'b0;
-assign m_addr[7]  = 32'h3F40_0000 + {6'h0, s_addr};
-assign m_burst[7] = s_burst;
-assign m_be[7]    = 4'hF;
-assign m_wdata[7] = 32'h0;
-assign s_waitn    = m_waitn[7];
-assign s_rvalid   = m_rvalid[7];
+// port S as master 8: frame-buffer offsets onto vraster's FB_BASE
+assign m_read[8]  = s_read;
+assign m_write[8] = 1'b0;
+assign m_addr[8]  = 32'h3F40_0000 + {6'h0, s_addr};
+assign m_burst[8] = s_burst;
+assign m_be[8]    = 4'hF;
+assign m_wdata[8] = 32'h0;
+assign s_waitn    = m_waitn[8];
+assign s_rvalid   = m_rvalid[8];
 assign s_rdata    = m_rdata;
 assign s_rdata_hi = m_rdata_hi;
 
@@ -353,15 +401,30 @@ hornet_sdram sdram (
 );
 
 assign DDRAM_CLK = clk_sys;
+wire  [7:0] h_burstcnt, l_burstcnt;
+wire [28:0] h_addr, l_addr;
+wire        h_rd, h_we, l_rd;
 wire [23:0] ddr_dbg;
 wire [77:0] ddr_cmd;
-hornet_ddr3 #(.N(8), .WIDE(DDR_WIDE)) ddr3 (
+hornet_ddr3 #(.N(9), .WIDE(DDR_WIDE)) ddr3 (
 	.clk(clk_sys), .reset(!pll_locked), .drain(board_reset), .idle(ddr_idle),
 	.m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_waitn, .m_rvalid, .m_rdata,
 	.m_be_hi(m_be_hi), .m_wdata_hi(m_wdata_hi), .m_rdata_hi(m_rdata_hi),
-	.DDRAM_BUSY, .DDRAM_BURSTCNT, .DDRAM_ADDR, .DDRAM_DOUT, .DDRAM_DOUT_READY, .DDRAM_RD,
-	.DDRAM_DIN, .DDRAM_BE, .DDRAM_WE,
+	.DDRAM_BUSY(DDRAM_BUSY || ldr_active), .DDRAM_BURSTCNT(h_burstcnt), .DDRAM_ADDR(h_addr), .DDRAM_DOUT,
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY && !ldr_active), .DDRAM_RD(h_rd),
+	.DDRAM_DIN, .DDRAM_BE, .DDRAM_WE(h_we),
 	.dbg(ddr_dbg), .dbg_cmd(ddr_cmd)
+);
+// the loader has the port while the board is in reset and hornet_ddr3 idle (ldr_start waits for it)
+assign DDRAM_BURSTCNT = ldr_active ? l_burstcnt : h_burstcnt;
+assign DDRAM_ADDR     = ldr_active ? l_addr : h_addr;
+assign DDRAM_RD       = ldr_active ? l_rd : h_rd;
+assign DDRAM_WE       = !ldr_active && h_we;
+hornet_rom_loader rom_loader (
+	.clk(clk_sys), .reset(!pll_locked), .start(ldr_start), .length(27'h1C02000), .active(ldr_active),
+	.wr(ldr_wr), .addr(ldr_addr), .dout(ldr_dout), .wait_(ioctl_wait),
+	.DDRAM_BUSY, .DDRAM_BURSTCNT(l_burstcnt), .DDRAM_ADDR(l_addr), .DDRAM_DOUT, .DDRAM_DOUT_READY,
+	.DDRAM_RD(l_rd)
 );
 
 ///////////////////////   VIDEO   ////////////////////////////////
@@ -374,6 +437,18 @@ assign VGA_VS = vid_vs;
 assign VGA_R  = vid_r;
 assign VGA_G  = vid_g;
 assign VGA_B  = vid_b;
+
+// the sound board on the HPS (sw/arcsnd) as master 7: the PPC's K056800 and SNDRES writes out,
+// the server's replies in (hornet_sndbridge has the shared block's layout)
+assign m_burst[7] = 11'd2;
+assign {m_be[7], m_be_hi[7]} = 8'hFF;
+hornet_sndbridge sndbridge (
+	.clk(clk_sys), .reset(!pll_locked),
+	.wr(snd_wr), .wreg(snd_wreg), .wdata(snd_wdata), .reply(snd_reply), .live(snd_live),
+	.m_read(m_read[7]), .m_write(m_write[7]), .m_addr(m_addr[7]), .m_burst(),
+	.m_wdata({m_wdata_hi[7], m_wdata[7]}), .m_waitn(m_waitn[7]), .m_rvalid(m_rvalid[7]),
+	.m_rdata({m_rdata_hi, m_rdata})
+);
 
 assign LED_USER = ioctl_download;
 
@@ -388,7 +463,7 @@ wire        p_clr = issp_src[0];
 always @(posedge clk_sys) begin
 	p_vb <= vblank;
 	if (vblank && !p_vb && p_frames != 16'hFFFF) p_frames <= p_frames + 1'd1;
-	if (rom_dl && ioctl_wr) begin p_dlb <= p_dlb + 1'd1; if (p_dlb == 10'h3FF && p_dlkb != 16'hFFFF) p_dlkb <= p_dlkb + 1'd1; end
+	if (img_dl && img_wr) begin p_dlb <= p_dlb + 1'd1; if (p_dlb == 10'h3FF && p_dlkb != 16'hFFFF) p_dlkb <= p_dlkb + 1'd1; end
 	if (ppc_exec && p_ppc != 16'hFFFF) p_ppc <= p_ppc + 1'd1;
 	if (a_ack) p_aack <= p_aack + 1'd1;
 	if (b_ack) p_back <= p_back + 1'd1;
@@ -457,6 +532,7 @@ altsource_probe #(
 	        h_vwait, h_vw, h_smax, h_sbur, h_cmax, h_cbusy, h_creq, h_ovr}),
 	.source(), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`ifdef PROBE_DV                         // probes V and D: define in the .qsf when there is room
 // probe V: the Voodoo (vraster's io_dbg) a frame at a time, latched at each vblank: triangles,
 // fills, clocks drawing / busy / FIFO full / ring in use, texture fills and the clocks they hold
 // the pixel pipeline; the live status
@@ -496,21 +572,25 @@ altsource_probe #(
 	// source bit 0: the Voodoo's memory FIFO without its DDR3 ring
 	.source(v_ring_off), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`endif
 // probe K: the DDR3 port's command, live (hornet_ddr3's dbg_cmd), and every term of board_reset
 altsource_probe #(
-	.sld_auto_instance_index("YES"), .instance_id("K"), .probe_width(95), .source_width(1),
+	.sld_auto_instance_index("YES"), .instance_id("K"), .probe_width(134), .source_width(1),
 	.source_initial_value("0"), .enable_metastability("NO"), .lpm_type("altsource_probe")
 ) u_issp_k (
-	.probe({board_reset, pll_locked, ioctl_index[7:0], ioctl_download, nv_dl, rom_dl, buttons[1], status[0],
+	.probe({rot_dropped, ldr_addr[26:12], ldr_active, ldr_pending, ldr_due, ldr_done, dl0_seen, dl_seen_wr,
+	        nv_seen, ldr_wr && ioctl_wait,
+	        board_reset, pll_locked, ioctl_index[7:0], ioctl_download, nv_dl, rom_dl, buttons[1], status[0],
 	        RESET, ddr_idle, ddr_cmd}), .source(), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`ifdef PROBE_DV
 // probe D: the DDR3 port a frame at a time (hornet_ddr3's dbg), latched at each vblank: clocks
 // DDRAM_BUSY, idle, waiting for return-FIFO room, waiting to issue a read, writing; read commands,
 // write beats, beats in; read latency (accepted to first beat) sum and worst; commands by master
 wire        dd_lv = ddr_dbg[23];
-wire [11:0] dd_lat = ddr_dbg[22:11];
-wire        dd_go = ddr_dbg[10];
-wire [2:0]  dd_m = ddr_dbg[9:7];
+wire [11:0] dd_lat = {1'b0, ddr_dbg[22:12]};
+wire        dd_go = ddr_dbg[11];
+wire [2:0]  dd_m = (ddr_dbg[10:7] == 4'd8) ? 3'd7 : ddr_dbg[9:7];       // port S in slot 7, the rotator uncounted
 wire        dd_in = ddr_dbg[6], dd_wb = ddr_dbg[5], dd_ra = ddr_dbg[4], dd_room = ddr_dbg[3], dd_busy = ddr_dbg[2];
 wire [1:0]  dd_as = ddr_dbg[1:0];
 reg  [23:0] r_dbusy, q_dbusy, r_didle, q_didle, r_droom, q_droom, r_drdw, q_drdw, r_dwr, q_dwr;
@@ -535,7 +615,7 @@ always @(posedge clk_sys) begin
 		if (dd_wb) r_dwb <= r_dwb + 1'd1;
 		if (dd_in) r_din <= r_din + 1'd1;
 		if (dd_lv) begin r_dlat <= r_dlat + dd_lat; if (dd_lat > r_dlmax) r_dlmax <= dd_lat; end
-		if (dd_go) r_dc[dd_m] <= r_dc[dd_m] + 1'd1;
+		if (dd_go && ddr_dbg[10:7] != 4'd7) r_dc[dd_m] <= r_dc[dd_m] + 1'd1;
 	end
 end
 altsource_probe #(
@@ -546,6 +626,7 @@ altsource_probe #(
 	        q_dlmax, q_dlat, q_din, q_dwb, q_drc, q_dwr, q_drdw, q_droom, q_didle, q_dbusy}),
 	.source(), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`endif
 `endif
 
 endmodule

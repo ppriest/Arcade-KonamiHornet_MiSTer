@@ -63,3 +63,11 @@ the host: 9,200,000 vectors over seeds 1 and 7, 23 operations, result and flags,
 |---|---|---|---|
 | CLUT entry 32 of 0 with entry 31 non-zero reads as white | `voodoo.cpp:862-863` (for Midway games) | copies, `hornet_video.sv` `clut_at` | — |
 | 2x2 dither matrix 8 10 / 11 9 | `voodoo_render.cpp:45-51`, chosen so that iteagle's (Voodoo 3) memory tests pass | copies: `rtl/voodoo/patches/0002-dither-2x2-mame.patch` replaces SpinalVoodoo's 86Box tables (matrix 2 10 / 14 6). The 4x4 tables agree. Drawn-buffer pixels differing from MAME: 10,530 to 4,613 (window 2150), 21,118 to 5,381 (7500) | a Voodoo 1 frame buffer drawn with 2x2 dither |
+
+## Sound board (sw/arcsnd/hornet, on the HPS)
+
+| Kludge | MAME | Core | Would settle it |
+|---|---|---|---|
+| RF5C400 register writes take effect per 20 ms block | `emu/sound.h:126`: streams render at 50 Hz, and `rf5c400_w` does not update its stream first, so a write applies to the whole block it falls in | copies, `hornet/board.cpp` `run_until` | a recording of the board |
+| The sound timer restarts with the 68000's reset | `hornet.cpp:1405` `set_periodic_int`: the device's timer is re-armed by its reset, which releasing SNDRES runs; measured: MAME's timer writes sit 16 us into periods counted from the release (`debug/gradius4-sndlog0-5800`) | copies, `restart_timer` | the board's timer circuit (16.9344 MHz / 384 / 128, free-running on the PCB?) |
+| RF5C400 envelopes, effects and filter | `rf5c400.cpp:66-107` "experimental" envelope tables; effects sends and the cutoff are not applied | copies (effect outputs unused, as `hornet.cpp` routes only outputs 0-1) | the chip's documentation |

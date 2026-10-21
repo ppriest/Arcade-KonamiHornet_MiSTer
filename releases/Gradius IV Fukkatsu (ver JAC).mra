@@ -9,8 +9,10 @@
     <rotation>horizontal</rotation>
 
     <!-- KonamiHornet.sv's download: program ROM 4 MB (the 2 MB ROM twice, as MAME's region),
-         data ROM 8 MB, CG ROM 16 MB, M48T58 8 KB; written and checked by scripts/gen_mra.py -->
-    <rom index="0" zip="gradius4.zip" md5="none">
+         data ROM 8 MB, CG ROM 16 MB, M48T58 8 KB; then the sound board's 68000 program (512 KB)
+         and samples (8 MB) as stored, which the HPS's sound server reads from DDR3 (the
+         fast load); written and checked by scripts/gen_mra.py -->
+    <rom index="0" zip="gradius4.zip" md5="none" address="0x30000000">
         <!-- program ROM: ROM_LOAD16_WORD_SWAP, reloaded -->
         <interleave output="16">
             <part name="837c01.27p" crc="ce003123" map="12"/>
@@ -18,7 +20,7 @@
         <interleave output="16">
             <part name="837c01.27p" crc="ce003123" map="12"/>
         </interleave>
-        <!-- data ROM: ROM_LOAD32_WORD_SWAP, a04 in bytes 0-1, a05 in bytes 2-3 -->
+        <!-- data ROM: ROM_LOAD32_WORD_SWAP, the first in bytes 0-1, the second in bytes 2-3 -->
         <interleave output="32">
             <part name="837a04.16t" crc="18453b59" map="0012"/>
             <part name="837a05.14t" crc="77178633" map="1200"/>
@@ -35,6 +37,10 @@
         </interleave>
         <!-- M48T58: the set's NVRAM image -->
         <part name="m48t58y-70pc1_jac" crc="935f9d05"/>
+        <!-- the sound board (sw/arcsnd): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+        <part name="837a08.7s" crc="c3a7ff56"/>
+        <part name="837a09.16p" crc="fb8f3dc2"/>
+        <part name="837a10.14p" crc="1419cad2"/>
     </rom>
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
     <nvram index="4" size="8192"/>

@@ -106,6 +106,16 @@ set fields_K {
     {ioctl_index     85  92 dec}
     {pll_locked      93  93 bit}
     {board_reset     94  94 bit}
+    {ldr_wr_wait     95  95 bit}
+    {nv_seen         96  96 bit}
+    {dl_seen_wr      97  97 bit}
+    {dl0_seen        98  98 bit}
+    {ldr_done        99  99 bit}
+    {ldr_due        100 100 bit}
+    {ldr_pending    101 101 bit}
+    {ldr_active     102 102 bit}
+    {ldr_addr_4k    103 117 hex}
+    {rot_dropped    118 133 dec}
 }
 # probe D: the DDR3 port, the last whole frame (clk_sys clocks)
 set fields_D {

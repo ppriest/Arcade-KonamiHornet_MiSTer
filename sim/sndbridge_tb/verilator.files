@@ -1,0 +1,3 @@
+rtl/mister/hornet_ddr3.sv
+rtl/mister/hornet_sndbridge.sv
+sim/sndbridge_tb/tb_sndbridge.sv

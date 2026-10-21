@@ -1,0 +1,61 @@
+<misterromdescription>
+    <name>NBA Play By Play (ver UAB)</name>
+    <setname>nbapbp</setname>
+    <rbf>KonamiHornet</rbf>
+    <mameversion>0289</mameversion>
+    <year>1998</year>
+    <manufacturer>Konami</manufacturer>
+    <category>Sports</category>
+    <rotation>horizontal</rotation>
+    <!-- Untested on the core: the security EEPROM (X76F041) and the JVS I/O board are not
+         emulated; MAME says the game is regionless and bugged without the first -->
+
+    <!-- KonamiHornet.sv's download: program ROM 4 MB (the 2 MB ROM twice, as MAME's region),
+         data ROM 8 MB, CG ROM 16 MB, M48T58 8 KB; then the sound board's 68000 program (512 KB)
+         and samples (16 MB) as stored, which the HPS's sound server reads from DDR3 (the
+         fast load); written and checked by scripts/gen_mra.py -->
+    <rom index="0" zip="nbapbp.zip" md5="none" address="0x30000000">
+        <!-- program ROM: ROM_LOAD16_WORD_SWAP, reloaded -->
+        <interleave output="16">
+            <part name="778b01.27p" crc="8dca96b5" map="12"/>
+        </interleave>
+        <interleave output="16">
+            <part name="778b01.27p" crc="8dca96b5" map="12"/>
+        </interleave>
+        <!-- data ROM: ROM_LOAD32_WORD_SWAP, the first in bytes 0-1, the second in bytes 2-3 -->
+        <interleave output="32">
+            <part name="778a04.16t" crc="62c70132" map="0012"/>
+            <part name="778a05.14t" crc="03249803" map="1200"/>
+        </interleave>
+        <!-- CG ROM: ROM_LOAD32_WORD_SWAP pairs, the second at 8 MB -->
+        <interleave output="32">
+            <part name="778a13.24u" crc="47fda9cc" map="0012"/>
+            <part name="778a14.32u" crc="db0c278d" map="1200"/>
+        </interleave>
+        <interleave output="32">
+            <part name="778a15.24v" crc="d176ad0d" map="0012"/>
+            <part name="778a16.32v" crc="6c0f46ea" map="1200"/>
+        </interleave>
+        <!-- M48T58: the set's NVRAM image -->
+        <part name="m48t58y-70pc1" crc="3cff1b1d"/>
+        <!-- the sound board (sw/arcsnd): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+        <part name="778a08.7s" crc="6259b4bf"/>
+        <part name="778a09.16p" crc="e8c6fd93"/>
+        <part name="778a10.14p" crc="c6a0857b"/>
+        <part name="778a11.12p" crc="40199382"/>
+        <part name="778a12.9p" crc="27d0c724"/>
+    </rom>
+    <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
+    <nvram index="4" size="8192"/>
+
+    <switches default="7B">
+        <dip name="Skip Post" bits="7" ids="On,Off"/>
+        <dip name="Screen Flip (H)" bits="6" ids="On,Off"/>
+        <dip name="Screen Flip (V)" bits="5" ids="On,Off"/>
+        <dip name="Harness" bits="2" ids="JAMMA,JVS"/>
+        <dip name="Cabinet Type" bits="1" ids="4 Player,2 Player"/>
+        <dip name="Monitor Type" bits="0" ids="15KHz,24KHz"/>
+    </switches>
+
+    <buttons names="Shoot,Pass,Turbo,Start,Coin,Service,Test" default="A,B,X,Start,Select,R,L"/>
+</misterromdescription>

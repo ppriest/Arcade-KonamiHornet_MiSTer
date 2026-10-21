@@ -7,7 +7,7 @@
 prgrom: ROM_LOAD16_WORD_SWAP at 0x200000, reloaded at 0 (hornet.cpp:2874-2876).
 datarom: ROM_LOAD32_WORD_SWAP, a04 in bytes 0-1 and a05 in bytes 2-3 of each word
 (hornet.cpp:2878-2879). cgrom: ROM_LOAD32_WORD_SWAP, a13/a15 in bytes 0-1 and a14/a16 in
-bytes 2-3, the second pair at 8 MB (hornet.cpp:2881-2885). Only gradius4 is described so far.
+bytes 2-3, the second pair at 8 MB (hornet.cpp:2881-2885).
 """
 import sys
 import zipfile
@@ -20,6 +20,8 @@ from mame_capture import load_env  # noqa: E402
 SETS = {
     "gradius4": {"prg": "837c01.27p", "data": ("837a04.16t", "837a05.14t"),
                  "cg": (("837a13.24u", "837a14.32u"), ("837a15.24v", "837a16.32v"))},
+    "nbapbp": {"prg": "778b01.27p", "data": ("778a04.16t", "778a05.14t"),
+               "cg": (("778a13.24u", "778a14.32u"), ("778a15.24v", "778a16.32v"))},
 }
 
 
@@ -37,14 +39,18 @@ def main():
     out = REPO / "debug" / f"{name}-roms"
     out.mkdir(parents=True, exist_ok=True)
 
+    def words32(hi_name, lo_name, size):
+        hi, lo = swap16(z.read(hi_name)), swap16(z.read(lo_name))
+        img = bytearray(size)
+        for i in range(len(hi) // 2):
+            img[4 * i:4 * i + 2] = hi[2 * i:2 * i + 2]
+            img[4 * i + 2:4 * i + 4] = lo[2 * i:2 * i + 2]
+        return img
+
     prg = swap16(z.read(s["prg"]))
     (out / "prgrom.bin").write_bytes(prg + prg)
 
-    hi, lo = (swap16(z.read(f)) for f in s["data"])
-    data = bytearray(8 * 1024 * 1024)
-    for i in range(len(hi) // 2):
-        data[4 * i:4 * i + 2] = hi[2 * i:2 * i + 2]
-        data[4 * i + 2:4 * i + 4] = lo[2 * i:2 * i + 2]
+    data = words32(*s["data"], 8 * 1024 * 1024)
     (out / "datarom.bin").write_bytes(bytes(data))
 
     cg = bytearray(16 * 1024 * 1024)

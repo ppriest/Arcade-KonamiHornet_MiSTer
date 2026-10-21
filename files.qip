@@ -20,5 +20,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/board/hornet_board.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/sdram/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/hornet_sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/hornet_ddr3.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/hornet_rom_loader.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister/hornet_sndbridge.sv
 set_global_assignment -name SDC_FILE KonamiHornet.sdc
 set_global_assignment -name SYSTEMVERILOG_FILE KonamiHornet.sv

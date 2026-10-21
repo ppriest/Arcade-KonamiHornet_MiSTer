@@ -44,6 +44,7 @@ Rules:
 | vraster: no Z iteration, fog, stipple, alpha planes, LFB writes, NCC or palette textures, LOD selection | `rtl/raster` | the game uses none of them (docs/RASTER.md census) | MAME's paths | census over attract and play | latent |
 | SHARC data memory 16K words | `rtl/board/hornet_board.sv` (`sharc2_core` DM_WORDS) | the ADSP-21062's block 1 is 32K words; addresses above 16K alias, for the board's M10K | 32K words (128 or 112 M10K) | `scripts/mame_sharc_dm_census.py`: 30,000 frames of attract and 15,000 with a game touch only 0x28000-0x2A7FF (`debug/gradius4-dmcensus-*`); simulation reports an access past 16K | latent |
 | K037122 SRAM 24K words | `rtl/board/hornet_board.sv` (`g_ksram`) | the SRAM is 32K words; the fourth quarter (0x6000-0x7FFF) is not built: writes are dropped and reads return 0, for the board's M10K | 32K words (128 M10K, 96 now) | `scripts/mame_k037122_census.py`: 30,000 frames of attract and 15,000 with a game write that quarter only with zeros, and control register 0x34 takes only 0x00 and 0xC8 (bit 2 clear: palette at 0, tilemap at 0x2000-0x5FFF; `debug/gradius4-kscensus-*`) | latent |
+| HDMI rotation in RGB565 | `rtl/mister/hornet_rotate.sv` (`pix`) | four pixels a 64-bit beat keep the rotator to a DDR3 command per four pixels on the Voodoo's port; the picture is 8:8:8 | 32 bpp beats of two pixels: twice the commands, or bursts and more line buffers | `sim/rotate_tb`; unverified on hardware | visible |
 
 ## Removed
 
