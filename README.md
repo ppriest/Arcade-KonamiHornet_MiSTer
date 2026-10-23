@@ -30,8 +30,14 @@ drawn, with sound from the MiSTer's ARM; not yet played through.**
 
 ## History
 
-No release yet.
-
+- `Arcade-KonamiHornet_20261023.rbf` (`b25ab62`, fitter seed 3), with `arcsnd_20261023.zip`:
+  first release. Gradius IV plays on the DE10-nano with sound and MAME's cheats; busy scenes
+  (the gold dragons, the lava stage) slow down. The HDMI scaler's clock misses setup by 0.41 ns;
+  the core's clocks meet timing (see Resource usage).
+- `b25ab62`: the full-width bands at the bottom of the screen in the gold-dragon attract are
+  gone (`sw/fbdump/fbwatch` on the board: none in 10 minutes). The PPC has a 4 KB line cache,
+  the SHARC early data loads and DMA beside its instructions; the arcsnd server keeps playing
+  across a core reload.
 - `2779c02` (deployed as `KonamiHornet_30000017.rbf`): sound. The sound board (68000, K056800,
   RF5C400) runs on the HPS in `sw/arcsnd`, alongside Hyper NeoGeo 64's; `hornet_sndbridge`
   passes the PPC's writes to it through DDR3. Heard on the DE10-nano; the server's log shows the
@@ -62,11 +68,11 @@ memory are in DDR3.
 
 ### Supported
 
-Sets with an `.mra` in `releases/`. None is verified playable yet.
+Sets with an `.mra` in `releases/`.
 
 | Name | Year | Manufacturer | Controls | Notes |
 |-|-|-|-|-|
-| Gradius IV: Fukkatsu (ver JAC) | 1998 | Konami | 8-way joystick, three buttons, two players | attract and a game start, with sound |
+| Gradius IV: Fukkatsu (ver JAC) | 1998 | Konami | 8-way joystick, three buttons, two players | playable with sound; slows down in busy scenes |
 
 ### Not yet
 
@@ -197,17 +203,16 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Resource usage
 
-The release revision `KonamiHornet` at `c0e55dc` (fitter seed 2) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7; setup met on every clock (worst +0.343 ns, the HDMI scaler). With the
-device this full the HDMI scaler's paths are sensitive to placement: the default seed missed by
-0.57 ns.
+The release revision `KonamiHornet` at `b25ab62` (fitter seed 3) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.583 ns, clk_sys) and missed
+on the HDMI scaler's by 0.41 ns; no HDMI fault was seen in play on the board.
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 39,991 | 41,910 |
-| Block memory bits | 4,370,789 | 5,662,720 |
-| RAM blocks | 543 | 553 |
-| DSP blocks | 93 | 112 |
+| Logic (ALMs) | 41,491 | 41,910 |
+| Block memory bits | 4,405,957 | 5,662,720 |
+| RAM blocks | 553 | 553 |
+| DSP blocks | 96 | 112 |
 | PLLs | 3 | 6 |
 
 Logic and RAM blocks are both nearly full; the SHARC is the largest block.
