@@ -8,6 +8,11 @@
 // C read may return the value from before or after a port A write that overlaps it.
 //
 //     scripts/run_verilator.sh sdram_tb [+seed=N] [+ops=N]
+//     scripts/run_verilator.sh sdram_tb +atrace=debug/atrace8460.txt [+only=a]
+//
+// +atrace: port A replays sim/board_tb's +atrace record instead of random traffic, each request the
+// recorded number of clocks after the last acknowledge; the words it reads before writing are
+// downloaded first with the values the board read. Reports the replay's clocks.
 
 `timescale 1ns/1ps
 
@@ -18,7 +23,9 @@ wire  clk;
 always #7.8125 clk_mem = !clk_mem;                      // 64 MHz: the core runs the controller at clk
 assign clk = clk_mem;
 
-logic        init = 1, reset = 1;
+logic        init = 1, reset = 1, flush = 0;
+logic [1:0]  a_dbg = 2'b00;
+logic [2:0]  b_left = 3'd0;
 wire  [15:0] SDRAM_DQ;
 logic [12:0] SDRAM_A;
 logic [1:0]  SDRAM_BA;
@@ -50,6 +57,9 @@ localparam int BR0   = 32'h090_0000, BR_N  = 8192;      // port B region 1 = (0x
 logic [31:0] ref_m [int];
 int errors = 0, nops = 3000, seed = 1;
 string only = "abc";                                   // +only=: the ports that run
+string atrace = "";
+longint replay_t0 = 0, replay_clk = 0;
+always @(posedge clk) replay_clk++;
 longint n_a = 0, n_b = 0, n_c = 0, t_a = 0, t_b = 0, t_c = 0;   // accesses, clocks waiting
 
 function automatic bit has(input string s, input string c);
@@ -136,6 +146,8 @@ initial begin
     if ($value$plusargs("seed=%d", seed)) ;
     if ($value$plusargs("ops=%d", nops)) ;
     if ($value$plusargs("only=%s", only)) ;
+    if ($value$plusargs("atrace=%s", atrace)) ;
+    begin int d; if ($value$plusargs("adbg=%d", d)) a_dbg = 2'(d); end
     r = $urandom(seed);
     repeat (20) @(posedge clk);
     init = 0;
@@ -147,11 +159,35 @@ initial begin
     for (int i = 0; i < WORK_N; i++) begin ref_m[WORK0 + i] = $urandom; dl_word(WORK0 + i, ref_m[WORK0 + i]); end
     for (int i = 0; i < CHR_N; i++)  begin ref_m[CHR0 + i]  = $urandom; dl_word(CHR0 + i, ref_m[CHR0 + i]); end
     for (int i = 0; i < BR_N; i++)   begin ref_m[BR0 + i]   = $urandom; dl_word(BR0 + i, ref_m[BR0 + i]); end
+    if (atrace != "") begin
+        int fd, gap, we, ad, be, wd, rd;
+        bit seen [int];
+        fd = $fopen(atrace, "r");
+        if (fd == 0) begin $display("cannot open %s", atrace); $finish; end
+        while ($fscanf(fd, "%d %d %h %h %h %h", gap, we, ad, be, wd, rd) == 6) begin
+            if (!we && !seen.exists(ad)) begin ref_m[ad] = rd; dl_word(ad, rd); end
+            seen[ad] = 1;
+        end
+        $fclose(fd);
+    end
     $display("download done at %t", $time);
 
     fork
+        // port A: a recorded stream
+        if (atrace != "") begin
+            int fd, gap, we, ad, be, wd, rd, n;
+            fd = $fopen(atrace, "r");
+            n = 0;
+            replay_t0 = replay_clk;
+            while ($fscanf(fd, "%d %d %h %h %h %h", gap, we, ad, be, wd, rd) == 6) begin
+                if (n++ > 0) repeat (gap > 2 ? gap - 2 : 0) @(negedge clk);
+                a_op(we[0], 23'(ad), 4'(be), wd);
+            end
+            $fclose(fd);
+            $display("replay: %0d accesses in %0d clocks", n, replay_clk - replay_t0);
+        end
         // port A
-        for (int i = 0; i < (has(only, "a") ? nops : 0); i++) begin
+        for (int i = 0; i < (has(only, "a") && atrace == "" ? nops : 0); i++) begin
             int k;
             k = $urandom_range(0, 9);
             if (k < 3) begin                                // a fetch run

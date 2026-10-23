@@ -45,6 +45,33 @@
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
     <nvram index="4" size="8192"/>
 
+    <cheats size="16" max="16">
+        <cheat name="Infinite Credits">00000000194700000000000063000000</cheat>
+        <cheat name="Invincibility">000000008b7021800000000018000000</cheat>
+        <cheat name="Select Gauge Position: None">000000006b4900000000000000000000</cheat>
+        <cheat name="Select Gauge Position: Speed Up">000000006b4900000000000001000000</cheat>
+        <cheat name="Select Gauge Position: Missile">000000006b4900000000000002000000</cheat>
+        <cheat name="Select Gauge Position: Double">000000006b4900000000000003000000</cheat>
+        <cheat name="Select Gauge Position: Laser">000000006b4900000000000004000000</cheat>
+        <cheat name="Select Gauge Position: Option">000000006b4900000000000005000000</cheat>
+        <cheat name="Select Gauge Position: ?">000000006b4900000000000006000000</cheat>
+        <cheat name="Select Speed: 0">00000000821d0f000000000000000000</cheat>
+        <cheat name="Select Speed: 1">00000000821d0f000000000001000000</cheat>
+        <cheat name="Select Speed: 2">00000000821d0f000000000002000000</cheat>
+        <cheat name="Select Speed: 3">00000000821d0f000000000003000000</cheat>
+        <cheat name="Select Speed: 4">00000000821d0f000000000004000000</cheat>
+        <cheat name="Select Speed: 5">00000000821d0f000000000005000000</cheat>
+        <cheat name="Always Have Missile">01000000971d0f000000000002000000</cheat>
+        <cheat name="Always Have Double (Buggy)">01000000971d0f000000000004000000</cheat>
+        <cheat name="Always Have Laser (Buggy)">01000000971d0f000000000008000000</cheat>
+        <cheat name="Always Have Options">00000000811d0f000000000004000000</cheat>
+        <cheat name="Infinite Force Field Energy">00000000831d0f000000000003000000</cheat>
+        <cheat name="Unlocked 2nd Loop Start">000000000f490000000000000100000000000000374900000000000001000000000000004b4900000000000001000000</cheat>
+        <cheat name="Rapid Fire - Shot">000000009b1d0f000000000000000000</cheat>
+        <cheat name="P1 Infinite Lives">00000000304900000000000009000000</cheat>
+        <cheat name="P2 Infinite Lives">00000000444900000000000009000000</cheat>
+    </cheats>
+
     <switches default="7B">
         <dip name="Skip Post" bits="7" ids="On,Off"/>
         <dip name="Screen Flip (H)" bits="6" ids="On,Off"/>

@@ -1,5 +1,6 @@
 rtl/mister/sdram/sdram.sv
 rtl/cpu/sharc2/sharc2_lutram.sv
+rtl/board/hornet_dpram.sv
 rtl/mister/hornet_sdram.sv
 sim/common/sdram_chip_model_wide.sv
 sim/common/sdram_chip_model_128.sv

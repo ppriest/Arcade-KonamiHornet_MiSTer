@@ -171,14 +171,18 @@ void hornet_run(int mem, bool verbose)
 				const uint64_t e = sh.read64(OFF_RING + (rd % RING) * 8);
 				const uint32_t us = uint32_t(e);
 				s64 tick = s64(us) * 16 + offset;
-				if (!mapped || tick < board->time() - 50 * TICKS_PER_MS || tick > board->time() + 100 * TICKS_PER_MS)
+				// a stamp before the last one (an entry read before it landed, or the stamp's wrap) is
+				// mapped afresh: unsigned, the spacing to it would be hours and the ring would stall
+				const int32_t dus = int32_t(us - last_us);
+				if (!mapped || dus < 0 || tick < board->time() - 50 * TICKS_PER_MS || tick > board->time() + 100 * TICKS_PER_MS)
 				{
 					// first entry, or the clocks have drifted apart: map this stamp LAT ahead
 					offset = board->time() + LAT - s64(us) * 16;
 					tick = board->time() + LAT;
 					mapped = true;
+					last_us = us; last_tick = tick;   // the next stamp is spaced from this one
 				}
-				else tick = std::max(tick, last_tick + s64(us - last_us) * 16);
+				else tick = std::max(tick, last_tick + s64(dus) * 16);
 				if (tick >= end) break;
 				board->run_until(std::max(tick, board->time()));
 				apply(e);
@@ -204,6 +208,15 @@ void hornet_run(int mem, bool verbose)
 			fprintf(stderr, "arcsnd hornet: %s, %u entries, busy %.0f%% (CPU %.0f%%), %u gaps (%.0f ms)\n",
 			        running ? "running" : "idle", rep_entries, 100.0 * busy_ns / span,
 			        100.0 * (cpu_ns() - rep_cpu) / span, audio.gaps, audio.gap_ns / 1e6);
+			if (running) {
+				// the ring's state: entries waiting, and where the next and the last applied sit on the
+				// board's clock (ms)
+				const uint32_t count = uint32_t(sh.read64(OFF_COUNT));
+				const uint64_t e = sh.read64(OFF_RING + (rd % RING) * 8);
+				fprintf(stderr, "arcsnd hornet: ring rd %u count %u; next stamp %u (last %u), at %+.1f ms, last at %+.1f ms\n",
+				        rd, count, uint32_t(e), last_us, (s64(uint32_t(e)) * 16 + offset - board->time()) / double(TICKS_PER_MS),
+				        (last_tick - board->time()) / double(TICKS_PER_MS));
+			}
 			rep_t = now_ns(); rep_cpu = cpu_ns(); busy_ns = 0; rep_entries = 0; audio.gaps = 0; audio.gap_ns = 0;
 		}
 		if (!running || !audio.wants_more()) sleep_ns(1'000'000);

@@ -229,11 +229,15 @@ wire signed [11:0] axi = 12'(vAx >>> 4), ayi = 12'(vAy >>> 4);
 // The edges' x at the scanline centre, 20 fraction bits (mod 2^32): (xa << 20 + dy16 s) >> 4 on
 // the first row (dy16: y + 0.5 - ya in 12.4), then + s a row, which is exact; rounded by MAME's
 // round_coordinate
-function automatic logic signed [11:0] edge_round(input logic signed [31:0] x20);
-    return 12'(x20 >>> 20) + ((x20[19:0] > 20'h80000) ? 12'sd1 : 12'sd0);
+// an edge's x rounded to a pixel and held to -2048..2047: an edge far off the screen stays off it
+// (MAME's edges are floats; a wrapped one would span the screen)
+function automatic logic signed [11:0] edge_round(input logic signed [43:0] x20);
+    logic signed [24:0] v;
+    v = 25'(x20 >>> 20) + ((x20[19:0] > 20'h80000) ? 25'sd1 : 25'sd0);
+    return (v > 25'sd2047) ? 12'sd2047 : (v < -25'sd2048) ? -12'sd2048 : 12'(v);
 endfunction
 logic signed [56:0] ep [3];                            // the first row's dy16 s
-logic signed [31:0] x13, x12, x23;
+logic signed [43:0] x13, x12, x23;                    // 12.20 with 12 bits to spare: no wrap
 logic signed [11:0] ea, eb;                            // this row's ends, rounded
 logic [9:0]  sy_l;
 
@@ -336,14 +340,15 @@ always_ff @(posedge clk) begin
         // the first row's parameters: start + (y - ay) * dpdy (the shared multiplier, added above);
         // the edges' first x
         if (pk == 2'd0) begin
-            ep[0] <= $signed(17'({y_cur, 4'h8}) - 17'(t1y)) * slope13;
-            ep[1] <= $signed(17'({y_cur, 4'h8}) - 17'(t1y)) * slope12;
-            ep[2] <= $signed(17'({y_cur, 4'h8}) - 17'(t2y)) * slope23;
+            // y - vertex y, both signed (a first row at 0 under a vertex just above the top)
+            ep[0] <= (17'($signed({y_cur, 4'h8})) - 17'(t1y)) * slope13;
+            ep[1] <= (17'($signed({y_cur, 4'h8})) - 17'(t1y)) * slope12;
+            ep[2] <= (17'($signed({y_cur, 4'h8})) - 17'(t2y)) * slope23;
         end
         if (pk == 2'd1) begin
-            x13 <= 32'(($signed({t1x, 20'h0}) + ep[0]) >>> 4);
-            x12 <= 32'(($signed({t1x, 20'h0}) + ep[1]) >>> 4);
-            x23 <= 32'(($signed({t2x, 20'h0}) + ep[2]) >>> 4);
+            x13 <= 44'(($signed({t1x, 20'h0}) + ep[0]) >>> 4);
+            x12 <= 44'(($signed({t1x, 20'h0}) + ep[1]) >>> 4);
+            x23 <= 44'(($signed({t2x, 20'h0}) + ep[2]) >>> 4);
         end
         pk <= pk + 2'd1;
         if (pk == 2'd3) ts <= T_LINE;
@@ -352,7 +357,8 @@ always_ff @(posedge clk) begin
         if (y_cur >= y_end) ts <= T_DRAIN;
         else begin
             ea <= edge_round(x13);
-            eb <= edge_round(({y_cur, 4'h8} < 16'(t2y)) ? x12 : x23);
+            // signed: a middle vertex above the top (t2y < 0) puts every visible row on the 2-3 edge
+            eb <= edge_round(($signed({y_cur, 4'h8}) < t2y) ? x12 : x23);
             sy_l <= yflip ? 10'(yorg - 10'(y_cur)) : 10'(y_cur);
             ts <= T_CLIP;
         end
@@ -372,6 +378,11 @@ always_ff @(posedge clk) begin
         // the empty test is T_SPAN's first clock
         cx0 <= a; cx1 <= b;
         row_skip <= (fbzMode[0] && (sy < clip_t || sy >= clip_b)) || y_cur < 0;
+`ifndef SYNTHESIS
+        if (!((fbzMode[0] && (sy < clip_t || sy >= clip_b)) || y_cur < 0) && sy >= 10'd384 && a < b)
+            $display("vraster: span at row %0d (y %0d, yorg %0d, flip %0d, clip %0d %0d-%0d)", sy, y_cur, yorg, yflip,
+                     fbzMode[0], clip_t, clip_b);
+`endif
         sx0 <= 10'(a); sx1 <= 10'(b);
         s_scry <= sy;
         pk <= 2'd0;
@@ -397,7 +408,7 @@ always_ff @(posedge clk) begin
     T_NEXT: begin
         y_cur <= y_cur + 12'sd1;
         r_a <= r_a + dAdY; r_w <= r_w + dWdY; r_s <= r_s + dSdY; r_t <= r_t + dTdY;
-        x13 <= x13 + 32'(slope13); x12 <= x12 + 32'(slope12); x23 <= x23 + 32'(slope23);
+        x13 <= x13 + 44'(slope13); x12 <= x12 + 44'(slope12); x23 <= x23 + 44'(slope23);
         ts <= T_LINE;
     end
     T_DRAIN: if (!sd_v && spans_idle) begin tri_done <= 1'b1; ts <= T_IDLE; end

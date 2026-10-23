@@ -12,5 +12,7 @@ the line fills (the character cache and port B's read-ahead) with the double rea
 and port B's writes; port 2 the download.
 
 Edits here are marked `[Hornet]`: the state register and its constants widened to 5 bits, so that
-CAS latency 3 and tRCD 3 (the double read's last state is then 16) can be set. The core runs the
+CAS latency 3 and tRCD 3 (the double read's last state is then 16) can be set. Port 1's two-halfword
+write (`w2_1`, `din1b`, `wrl1b`, `wrh1b`): the first WRITE leaves the row open, the second, a clock
+later at the next column, precharges; a 32-bit write is one row activation, not two. The core runs the
 controller at clk_sys, 64 MHz, with 2 and 2, as KonamiGX did at 96 MHz.

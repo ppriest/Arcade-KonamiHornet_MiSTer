@@ -73,6 +73,8 @@ localparam CONF_STR = {
 `endif
 	"-;",
 	"DIP;",
+	"C,Cheats;",
+	"O[7],Cheats Enabled,Yes,No;",
 	"-;",
 	"R[0],Reset and close OSD;",
 	"J1,Shot,Missile,Power Up,Start,Coin,Service,Test,Pause;",
@@ -181,6 +183,28 @@ end
 reg [7:0] dsw = 8'h7B;                  // gradius4's defaults (hornet.cpp INPUT_PORTS gradius4)
 always @(posedge clk_sys) if (ioctl_wr && ioctl_index == 16'd254 && ioctl_addr == 27'd0) dsw <= ioctl_dout;
 
+// cheats (ioctl index 255): the active codes, 16 bytes each, little-endian words, into the board's
+// store a word at a time (16 codes); their number when the download ends (Main_MiSTer sends 2 bytes
+// when none is active)
+wire        cht_dl = ioctl_download && ioctl_index == 16'd255;
+reg  [31:0] cht_sh, cht_wd;
+reg         cht_we, cht_dl_q;
+reg   [5:0] cht_wa;
+reg   [8:0] cht_top;
+reg   [4:0] cht_n;
+always @(posedge clk_sys) begin
+	cht_we <= 1'b0;
+	cht_dl_q <= cht_dl;
+	if (cht_dl && !cht_dl_q) cht_top <= 9'd0;
+	if (cht_dl && ioctl_wr && ioctl_addr[26:8] == 0) begin
+		cht_sh <= {ioctl_dout, cht_sh[31:8]};
+		if (ioctl_addr[1:0] == 2'd3) begin cht_we <= 1'b1; cht_wa <= ioctl_addr[7:2]; cht_wd <= {ioctl_dout, cht_sh[31:8]}; end
+		cht_top <= ioctl_addr[8:0] + 9'd1;
+	end
+	if (!cht_dl && cht_dl_q) cht_n <= cht_top[8] ? 5'd16 : {1'b0, cht_top[7:4]};
+	if (!pll_locked) cht_n <= 5'd0;
+end
+
 // the image's bytes: ROM halfwords to the SDRAM, the M48T58 bytes to the board
 reg  [7:0]  dl_hi;                      // the halfword's even byte
 reg         d_we;
@@ -265,6 +289,7 @@ wire [31:0] a_wdata, a_rdata;
 wire        b_req, b_we, b_ack;
 wire [22:0] b_addr;
 wire [31:0] b_wdata, b_rdata;
+wire  [2:0] b_left;
 wire        c_req, c_ack;
 wire [18:0] c_addr;
 wire [127:0] c_rdata;
@@ -280,8 +305,10 @@ wire [1:0]  v_displayed;
 wire [25:0] v_base0;
 wire [15:0] v_dbg;
 wire        v_ring_off, v_ring_bad;
+wire [1:0]  sd_dbg;                     // hornet_sdram's port A debug switches (probe F's source)
 `ifndef DEBUG_ISSP
 assign v_ring_off = 1'b0;
+assign sd_dbg = 2'b00;
 `endif
 wire [31:0] ppc_pc;
 wire [23:0] dsp_pc;
@@ -327,7 +354,8 @@ wire [7:0] in2 = ~{joystick_0[8], joystick_1[8], joystick_0[9], joystick_0[10] |
 hornet_board board (
 	.clk(clk_sys), .clk_dsp, .reset(board_reset),
 	.a_req, .a_we, .a_addr, .a_be, .a_wdata, .a_ack, .a_rdata,
-	.b_req, .b_we, .b_addr, .b_wdata, .b_ack, .b_rdata,
+	.b_req, .b_we, .b_addr, .b_wdata, .b_left, .b_ack, .b_rdata,
+	.cht_we, .cht_wa, .cht_wd, .cht_n(status[7] ? 5'd0 : cht_n),
 	.c_req, .c_addr, .c_ack, .c_rdata,
 	.s_read, .s_addr, .s_burst, .s_waitn, .s_rvalid, .s_rdata, .s_rdata_hi,
 	.vid_ce, .vid_de, .vid_x(), .vid_y(), .vid_r, .vid_g, .vid_b,
@@ -391,11 +419,11 @@ assign s_rdata_hi = m_rdata_hi;
 ///////////////////////   MEMORY   ///////////////////////////////
 
 hornet_sdram sdram (
-	.clk(clk_sys), .clk_mem(clk_sys), .init(!pll_locked), .reset(!pll_locked),
+	.clk(clk_sys), .clk_mem(clk_sys), .init(!pll_locked), .reset(!pll_locked), .flush(board_reset), .a_dbg(sd_dbg),
 	.SDRAM_A, .SDRAM_DQ, .SDRAM_DQML, .SDRAM_DQMH, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE,
 	.SDRAM_nRAS, .SDRAM_nCAS, .SDRAM_CLK(), .SDRAM_CKE,
 	.a_req(a_req && !board_reset), .a_we, .a_addr, .a_be, .a_wdata, .a_ack, .a_rdata,
-	.b_req(b_req && !board_reset), .b_we, .b_addr, .b_wdata, .b_ack, .b_rdata,
+	.b_req(b_req && !board_reset), .b_we, .b_addr, .b_wdata, .b_left, .b_ack, .b_rdata,
 	.c_req(c_req && !board_reset), .c_addr, .c_ack, .c_rdata,
 	.d_we, .d_addr, .d_din, .d_ready
 );
@@ -475,6 +503,7 @@ always @(posedge clk_dsp) begin
 	if (dsp_exec && p_dsp != 16'hFFFF) p_dsp <= p_dsp + 1'd1;
 	if (p_clr_d[1]) p_dsp <= 0;
 end
+`ifdef PROBE_F                          // probe F (bring-up) and K (the loader): when there is room
 altsource_probe #(
 	.sld_auto_instance_index("YES"), .instance_id("F"), .probe_width(144), .source_width(8),
 	.source_initial_value("0"), .enable_metastability("NO"), .lpm_type("altsource_probe")
@@ -483,6 +512,10 @@ altsource_probe #(
 	        p_back, p_aack, dsp_pc, ppc_pc, p_dsp, p_ppc, p_dlkb, p_frames}),
 	.source(issp_src), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`else
+assign issp_src = 8'h0;
+`endif
+assign sd_dbg = issp_src[2:1];
 // probe H: one frame's traffic and timing, latched at each vblank (scripts/read_issp.tcl's
 // fields_H): the K037122 line builder, ports A/B/C/S, the SHARC's Voodoo writes, DDR3 beats
 reg  [7:0]  h_fr, h_swap;
@@ -574,6 +607,7 @@ altsource_probe #(
 );
 `endif
 // probe K: the DDR3 port's command, live (hornet_ddr3's dbg_cmd), and every term of board_reset
+`ifdef PROBE_K
 altsource_probe #(
 	.sld_auto_instance_index("YES"), .instance_id("K"), .probe_width(134), .source_width(1),
 	.source_initial_value("0"), .enable_metastability("NO"), .lpm_type("altsource_probe")
@@ -583,6 +617,7 @@ altsource_probe #(
 	        board_reset, pll_locked, ioctl_index[7:0], ioctl_download, nv_dl, rom_dl, buttons[1], status[0],
 	        RESET, ddr_idle, ddr_cmd}), .source(), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`endif
 `ifdef PROBE_DV
 // probe D: the DDR3 port a frame at a time (hornet_ddr3's dbg), latched at each vblank: clocks
 // DDRAM_BUSY, idle, waiting for return-FIFO room, waiting to issue a read, writing; read commands,

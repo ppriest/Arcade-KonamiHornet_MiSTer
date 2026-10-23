@@ -16,6 +16,10 @@ rtl/board/hornet_dpram2.sv
 rtl/board/hornet_cdc.sv
 rtl/board/hornet_icache.sv
 rtl/mister/hornet_ddr3.sv
+rtl/mister/sdram/sdram.sv
+rtl/mister/hornet_sdram.sv
+sim/common/sdram_chip_model_wide.sv
+sim/common/sdram_chip_model_128.sv
 rtl/board/hornet_rtc.sv
 rtl/board/hornet_video.sv
 rtl/board/hornet_board.sv

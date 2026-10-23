@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <map>
 #include <sstream>
 #include <string>
@@ -206,6 +207,10 @@ int main(int argc, char **argv) {
     static const char *pname[P_N] = {"exec", "slow-access", "dma-wait", "unit-busy", "flags/irq-wait",
                                      "squash", "D-hazard", "refill", "empty"};
     uint64_t perf[P_N] = {};
+    uint64_t hz[5] = {};
+    uint64_t xphc[8] = {};                   // slow clocks by X phase
+    std::map<uint32_t, uint64_t> slow_pc;     // ... by the PC in X
+    std::map<uint32_t, uint64_t> ld_pc;       // load hazard clocks by the load's PC (in X)                      // D hazard clocks: late R, multi-cycle wait, slow unit, DAG
     uint32_t irq_mask = 0;
     int fix_reg = -1;                   // R register loaded from the DMA status by the last insn
     bool fix_btf = false;               // the last insn tested IRPTL
@@ -295,9 +300,16 @@ int main(int argc, char **argv) {
         {
             auto *R = t->rootp;
             int k;
+            if (R->tb_sharc2__DOT__dsp__DOT__d_valid && R->tb_sharc2__DOT__dsp__DOT__d_hazard)
+                for (int h = 0; h < 5; h++) if ((R->tb_sharc2__DOT__dsp__DOT__dbg_hz >> h) & 1) hz[h]++;
+            if ((R->tb_sharc2__DOT__dsp__DOT__dbg_hz >> 4) & 1) ld_pc[R->tb_sharc2__DOT__dsp__DOT__x_pc]++;
             if (R->tb_sharc2__DOT__dsp__DOT__x_exec_now) k = P_EXEC;
             else if (R->tb_sharc2__DOT__dsp__DOT__x_squash) k = P_SQUASH;
-            else if (R->tb_sharc2__DOT__dsp__DOT__x_valid && R->tb_sharc2__DOT__dsp__DOT__xph != 0) k = P_SLOW;
+            else if (R->tb_sharc2__DOT__dsp__DOT__x_valid && R->tb_sharc2__DOT__dsp__DOT__xph != 0) {
+                k = P_SLOW;
+                xphc[R->tb_sharc2__DOT__dsp__DOT__xph & 7]++;
+                slow_pc[R->tb_sharc2__DOT__dsp__DOT__x_pc]++;
+            }
             else if (R->tb_sharc2__DOT__dsp__DOT__x_valid && R->tb_sharc2__DOT__dsp__DOT__x_stall)
                 k = R->tb_sharc2__DOT__dsp__DOT__x_busy ? P_BUSY : R->tb_sharc2__DOT__dsp__DOT__e_busy ? P_DMAWAIT : P_OTHERSTALL;
             else if (R->tb_sharc2__DOT__dsp__DOT__x_valid) k = P_OTHERSTALL;
@@ -321,6 +333,25 @@ int main(int argc, char **argv) {
     fclose(tr);
     fprintf(stderr, "clocks:");
     for (int k = 0; k < P_N; k++) if (perf[k]) fprintf(stderr, " %s %llu", pname[k], (unsigned long long)perf[k]);
+    fprintf(stderr, " | slow ACC %llu WAIT %llu POST %llu STEP %llu", (unsigned long long)xphc[1], (unsigned long long)xphc[2],
+            (unsigned long long)xphc[3], (unsigned long long)xphc[4]);
+    {
+        std::vector<std::pair<uint64_t, uint32_t>> v;
+        for (auto &e : slow_pc) v.push_back({e.second, e.first});
+        std::sort(v.rbegin(), v.rend());
+        {
+            std::vector<std::pair<uint64_t, uint32_t>> u;
+            for (auto &e : ld_pc) u.push_back({e.second, e.first});
+            std::sort(u.rbegin(), u.rend());
+            FILE *lp = fopen((win + "/ldhz_pcs.txt").c_str(), "w");
+            for (auto &e : u) fprintf(lp, "%05X %llu\n", e.second, (unsigned long long)e.first);
+            fclose(lp);
+        }
+        FILE *sp = fopen((win + "/slow_pcs.txt").c_str(), "w");
+        for (auto &e : v) fprintf(sp, "%05X %llu\n", e.second, (unsigned long long)e.first);
+        fclose(sp);
+    }
+    fprintf(stderr, " | hazard late-R %llu mc-wait %llu slow-unit %llu dag %llu (late R from loads %llu)", (unsigned long long)hz[0], (unsigned long long)hz[1], (unsigned long long)hz[2], (unsigned long long)hz[3], (unsigned long long)hz[4]);
     fprintf(stderr, "\n");
     fprintf(stderr, "%ld instructions, %llu clocks, %zu of %zu device accesses replayed\n", insns,
             (unsigned long long)cyc, next, log.size());

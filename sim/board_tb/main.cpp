@@ -19,6 +19,7 @@
 // Voodoo's Avalon ports as in sim/voodoo_tb (bursts, reads after a latency).
 
 #include "Vtb_board.h"
+#include "Vtb_board___024root.h"
 #include "verilated.h"
 #include <algorithm>
 #include <cstdint>
@@ -152,6 +153,8 @@ struct AvPort {
     std::deque<Burst> rq;
     uint64_t now = 0;
     uint32_t base = 0;                             // added to the address (port S: offsets)
+    uint32_t wlo = 0, whi = ~0u;                   // where this port's writes belong
+    const char *name = "";
     uint64_t bad = 0, nrd = 0, nwr = 0, nrq = 0;   // read beats, write beats, read bursts
 
     void drive() {
@@ -183,6 +186,8 @@ struct AvPort {
             if (!wr_left) wr_left = *burstCount;
             for (int h = 0; h < (wide ? 2 : 1); h++) {
                 uint8_t *p = mem_at(a + 4 * h);
+                if ((a + 4 * h < wlo || a + 4 * h >= whi) && bad++ < 8)
+                    fprintf(stderr, "Voodoo %s write outside its region: %08X\n", name, a + 4 * h);
                 uint32_t d = h ? *writeDataHi : *writeData;
                 uint8_t be = h ? *byteEnableHi : *byteEnable;
                 if (p) {
@@ -312,6 +317,49 @@ int main(int argc, char **argv) {
         if (pb_tag[1 - sl] != line + 1) pb_fill(1 - sl, line + 1, 0);
         return r;
     };
+    // +acache: port A behind a line cache of 8-word lines (+alines=, default 128; +aways=, default
+    // 1), as an SDRAM front end would be: a hit answers in +ahit clocks (default 2), a miss after
+    // +amiss (default 20: one double read), once the posted writes before it have drained. Writes
+    // are posted into a queue of +awq (default 4) and drain one every +awcost clocks (default 24:
+    // two controller writes); a hit's line is updated, a miss is not allocated.
+    bool acache = Verilated::commandArgsPlusMatch("acache")[0];
+    // +atrace=<file>: port A's first +atracen= accesses (default 100000) for sim/sdram_tb's replay,
+    // a line each: clocks from the last acknowledge to the request, write, address, byte enables,
+    // write data, read data
+    FILE *atrace = nullptr;
+    long atrace_n = 0;
+    { const char *v = Verilated::commandArgsPlusMatch("atrace=");
+      if (v && *v) atrace = fopen(v + 8, "w"); }
+    { const char *v = Verilated::commandArgsPlusMatch("atracen=");
+      atrace_n = v && *v ? atol(v + 9) : 100000; }
+    uint64_t at_clk = 0, at_req = 0, at_ack = 0; bool at_in = false;
+    auto iarg = [&](const char *nm, int dflt) { const char *v = Verilated::commandArgsPlusMatch(nm);
+                                                return v && *v ? atoi(v + strlen(nm) + 1) : dflt; };
+    const int a_lines = iarg("alines=", 128), a_ways = iarg("aways=", 1), a_hit = iarg("ahit=", 2),
+              a_miss = iarg("amiss=", 20), a_wq = iarg("awq=", 4), a_wcost = iarg("awcost=", 24);
+    std::vector<uint32_t> pa_tag(a_lines * a_ways, ~0u);
+    std::vector<uint64_t> pa_use(a_lines * a_ways, 0);
+    std::deque<uint64_t> pa_wq;                            // the queued writes' drain ends
+    uint64_t pa_now = 0, pa_ready = 0, pa_hits = 0, pa_misses = 0, pa_wfull = 0; bool pa_pend = false;
+    auto pa_access = [&](uint32_t a, bool we) -> uint64_t {
+        while (!pa_wq.empty() && pa_wq.front() <= pa_now) pa_wq.pop_front();
+        uint32_t line = a >> 3, set = line % a_lines;
+        int way = -1;
+        for (int k = 0; k < a_ways; k++) if (pa_tag[set * a_ways + k] == line) way = k;
+        if (we) {
+            uint64_t at = pa_now + 1;
+            if ((int)pa_wq.size() >= a_wq) { at = pa_wq[pa_wq.size() - a_wq]; pa_wfull++; }
+            pa_wq.push_back(std::max(at, pa_wq.empty() ? 0 : pa_wq.back()) + a_wcost);
+            if (way >= 0) pa_use[set * a_ways + way] = pa_now;
+            return at;
+        }
+        if (way >= 0) { pa_hits++; pa_use[set * a_ways + way] = pa_now; return pa_now + a_hit; }
+        pa_misses++;
+        int v = 0;
+        for (int k = 1; k < a_ways; k++) if (pa_use[set * a_ways + k] < pa_use[set * a_ways + v]) v = k;
+        pa_tag[set * a_ways + v] = line; pa_use[set * a_ways + v] = pa_now;
+        return std::max(pa_now, pa_wq.empty() ? 0 : pa_wq.back()) + a_miss;
+    };
     if (snap.empty()) { fprintf(stderr, "+snap=<dir> required\n"); return 1; }
     std::string st = snap + "/start/";
     const std::string roms = "debug/gradius4-roms/";
@@ -353,6 +401,12 @@ int main(int argc, char **argv) {
     ddr.t = t;
     AvPort vp[7] = {PORT(t, fbw), PORT(t, fbcw), PORT(t, fbaw), PORT(t, fbcr), PORT(t, fbar), PORT(t, tex), PORT(t, mf)};
     vp[5].wcost = g_wwait;
+    {   // the frame buffer (MAME's 2 MB), the ring at FB_BASE + 3 MB, the texture memory
+        const char *nm[7] = {"fbw", "fbcw", "fbaw", "fbcr", "fbar", "tex", "mf"};
+        for (int k = 0; k < 7; k++) { vp[k].name = nm[k]; vp[k].wlo = FB_BASE; vp[k].whi = FB_BASE + (2u << 20); }
+        vp[5].wlo = TEX_BASE; vp[5].whi = TEX_BASE + (4u << 20);
+        vp[6].wlo = FB_BASE + (3u << 20); vp[6].whi = FB_BASE + (3u << 20) + (512u << 10);
+    }
     vp[0].wide = true; vp[0].writeDataHi = &t->v_fbw_wdata_hi; vp[0].byteEnableHi = &t->v_fbw_be_hi;
     vp[6].wide = true; vp[6].writeDataHi = &t->v_mf_wdata_hi; vp[6].byteEnableHi = &t->v_mf_be_hi; vp[6].readDataHi = &t->v_mf_rdata_hi;
     vp[1].wide = true; vp[1].writeDataHi = &t->v_fbcw_wdata_hi; vp[1].byteEnableHi = &t->v_fbcw_be_hi;
@@ -366,6 +420,9 @@ int main(int argc, char **argv) {
     sp.base = FB_BASE;
     uint64_t cyc = 0;
     uint64_t a_bad = 0, b_bad = 0;
+    // port A accesses a frame: reads by region (work RAM, ROM, character RAM), writes; and reads
+    // that follow the previous read's word (the icache's fills)
+    uint64_t ast[3] = {}, a_wr = 0, a_seq = 0; uint32_t a_prev = ~0u;
     // +bstat: port B accesses a frame by region (RAM 0x500000, RAM 0x1400000, CG ROM), sequential, 16-word blocks
     uint64_t bst[3][2] = {}, bseq = 0; uint32_t bprev = 0; std::set<uint32_t> bblk;
     std::vector<uint8_t> screen(512 * 384 * 3, 0);
@@ -376,6 +433,29 @@ int main(int argc, char **argv) {
     t->run = 0; t->ld_we = 0; t->ld_v_we = 0;
     t->v_ring_off = ringoff;
     t->ddr3_en = ddr3;
+    // +sdram: ports A, B and C through hornet_sdram onto the chip model, preloaded with their memories.
+    // A port A word w is halfwords 2w (bits 31:16) and 2w + 1; a halfword address is {chip, a25,
+    // bank, row[12:0], column[8:0]} with a25 the column's top bit (rtl/mister/sdram/sdram.sv).
+    bool sdram = Verilated::commandArgsPlusMatch("sdram")[0];
+    t->sdram_en = sdram;
+    if (sdram) {
+        auto put = [&](uint32_t w, uint32_t v) {
+            for (int h = 0; h < 2; h++) {
+                uint32_t H = 2 * w + h;
+                uint32_t idx = ((H >> 22) & 3) << 23 | ((H >> 9) & 0x1FFF) << 10 | ((H >> 24) & 1) << 9 | (H & 0x1FF);
+                auto &m = (H >> 25) ? t->rootp->tb_board__DOT__chip__DOT__u_c1__DOT__mem
+                                    : t->rootp->tb_board__DOT__chip__DOT__u_c0__DOT__mem;
+                m[idx] = h ? (v & 0xFFFF) : (v >> 16);
+            }
+        };
+        for (uint32_t i = 0; i < work.size(); i++) put(i, work[i]);
+        for (uint32_t i = 0; i < prg.size(); i++) put(0x100000 + i, prg[i]);
+        for (uint32_t i = 0; i < data.size(); i++) put(0x200000 + i, data[i]);
+        for (uint32_t i = 0; i < chr.size(); i++) put(0x400000 + i, chr[i]);
+        for (uint32_t i = 0; i < r500.size(); i++) put(0x800000 + i, r500[i]);
+        for (uint32_t i = 0; i < r14.size(); i++) put(0x900000 + i, r14[i]);
+        for (uint32_t i = 0; i < cg.size(); i++) put(0xA00000 + i, cg[i]);
+    }
     t->ppc_dbg_we = 0; t->dsp_dbg_we = 0; t->dsp_dbg_pm_we = 0; t->dsp_dbg_dm_we = 0;
 
     // the SHARC's clock: with clk until dsp_dual (the state load), then +dspmhz=N MHz against clk's
@@ -386,12 +466,64 @@ int main(int argc, char **argv) {
     double t_ps = 0.0, dsp_next = 0.0;
     int dsp_lvl = 0;
     uint64_t dsp_x = 0;                 // with dsp_dual: the SHARC's instructions
+    // +dspprof: the SHARC's clocks by pipeline state (sim/sharc2_tb's classes), and its slow clocks
+    // by X's PC into <snap>/board_slow_pcs.txt
+    bool dsp_prof_on = Verilated::commandArgsPlusMatch("dspprof")[0];
+    uint64_t dprof[9] = {}, e_clk = 0, e_quanta = 0;   // ... and the DMA engine's busy clocks and quanta
+    std::map<uint32_t, uint64_t> dslow;
+    auto dsp_prof = [&]() {
+        if (!dsp_prof_on) return;
+        uint32_t s = t->rootp->tb_board__DOT__dut__DOT__dsp__DOT__dbg_prof;
+        bool hz = s & 1, dv = s & 2, eb = s & 4, xb = s & 8, xs = s & 16, xv = s & 32, sq = s & 64, ex = s & 128;
+        unsigned ph = s >> 8;
+        int k;
+        if (ex) k = 0;
+        else if (sq) k = 5;
+        else if (xv && ph) { k = 1; dslow[t->rootp->tb_board__DOT__dut__DOT__dsp__DOT__dbg_xpc]++; }
+        else if (xv && xs) k = xb ? 3 : eb ? 2 : 4;
+        else if (xv) k = 4;
+        else if (dv && hz) k = 6;
+        else if (!dv) k = 7;
+        else k = 8;
+        dprof[k]++;
+        static bool eb_q = false;
+        if (eb) { e_clk++; if (!eb_q) e_quanta++; }
+        eb_q = eb;
+    };
+    int frame = 0, prev_vpos = FRAME_LINE;
+    uint64_t sd_bad = 0;
+    uint64_t dx_wait = 0, dx_rwait = 0;
     auto clock = [&]() {
         t->clk = 0;
         if (!dsp_dual) t->clk_dsp = 0;
         // port A
         t->a_ack = 0;
-        if (due(0, t->a_req)) {
+        at_clk++;
+        if (t->a_req && !at_in) { at_in = true; at_req = at_clk; }
+        bool a_due;
+        if (sdram) {
+            // hornet_sdram answers; the C++ memories follow its acknowledged writes and check its reads
+            a_due = false;
+            if (t->a_req && t->rootp->tb_board__DOT__sd_a_ack) {
+                uint32_t a = t->a_addr, r = a >> 20;
+                uint32_t *w = r == 0 ? &work[a & 0xFFFFF] : r == 1 ? &prg[a & 0xFFFFF] :
+                              (r == 2 || r == 3) ? &data[a & 0x1FFFFF] : r == 4 ? &chr[a & 0x7FFFF] : nullptr;
+                if (w && t->a_we) {
+                    uint32_t m = 0;
+                    for (int i = 0; i < 4; i++) if (t->a_be & (1 << i)) m |= 0xFFu << (8 * i);
+                    *w = (*w & ~m) | (t->a_wdata & m);
+                } else if (w && *w != t->rootp->tb_board__DOT__sd_a_rdata && sd_bad++ < 20)
+                    fprintf(stderr, "frame %d line %d: port A read %06X: %08X from hornet_sdram, %08X written\n",
+                            frame + 1, (int)t->vpos, a, t->rootp->tb_board__DOT__sd_a_rdata, *w);
+            }
+        } else if (!acache) a_due = due(0, t->a_req);
+        else {
+            if (t->a_req && !pa_pend) { pa_pend = true; pa_ready = pa_access(t->a_addr, t->a_we); }
+            a_due = t->a_req && pa_now >= pa_ready;
+            if (a_due) pa_pend = false;
+        }
+        pa_now++;
+        if (a_due) {
             uint32_t a = t->a_addr, r = a >> 20, d = 0;
             uint32_t *w = nullptr;
             if (r == 0) w = &work[a & 0xFFFFF];
@@ -405,6 +537,14 @@ int main(int argc, char **argv) {
                 *w = (*w & ~m) | (t->a_wdata & m);
             } else d = *w;
             t->a_ack = 1; t->a_rdata = d;
+            if (t->a_we) a_wr++;
+            else { ast[r == 0 ? 0 : r == 4 ? 2 : 1]++; if (a == a_prev + 1) a_seq++; a_prev = a; }
+            if (atrace && atrace_n > 0) {
+                fprintf(atrace, "%llu %d %06X %X %08X %08X\n", (unsigned long long)(at_req - at_ack), t->a_we ? 1 : 0, a,
+                        (unsigned)t->a_be, (unsigned)t->a_wdata, d);
+                if (--atrace_n == 0) { fclose(atrace); atrace = nullptr; }
+            }
+            at_in = false; at_ack = at_clk;
         }
         // port B
         t->b_ack = 0;
@@ -453,10 +593,12 @@ int main(int argc, char **argv) {
             const double half = 1e6 / dsp_mhz / 2.0;
             // the SHARC's executed instructions counted at its own rising edges
             while (dsp_next < t_ps + clk_ps - 1.0) {
+                if (!dsp_lvl) dsp_prof();
                 if (!dsp_lvl && t->dsp_dbg_exec) dsp_x++;
                 dsp_lvl ^= 1; t->clk_dsp = dsp_lvl; t->eval(); dsp_next += half;
             }
             if (dsp_next < t_ps + clk_ps + 1.0) {
+                if (!dsp_lvl) dsp_prof();
                 if (!dsp_lvl && t->dsp_dbg_exec) dsp_x++;
                 dsp_lvl ^= 1; t->clk_dsp = dsp_lvl; dsp_next += half;
             }
@@ -625,19 +767,73 @@ int main(int argc, char **argv) {
     fprintf(stderr, "snapshot loaded at %llu clocks; PPC at %08X, SHARC at %05X\n", (unsigned long long)cyc,
             (unsigned)ppc_st["PC"], (unsigned)dsp_st["PC"]);
 
+    // +cheat=ADDR:VAL[:or],...: cheat codes into the board's store (KonamiHornet.sv's index-255 layout:
+    // flags, PPC address, compare, value), and the bytes they target printed each frame
+    std::vector<std::pair<uint32_t, uint32_t>> cheats;
+    if ((s = Verilated::commandArgsPlusMatch("cheat=")) && *s) {
+        std::string spec = s + 7;
+        size_t pos = 0;
+        while (pos < spec.size()) {
+            size_t e = spec.find(',', pos);
+            std::string c = spec.substr(pos, e == std::string::npos ? std::string::npos : e - pos);
+            uint32_t a = 0, v = 0; char m[8] = "";
+            sscanf(c.c_str(), "%x:%x:%7s", &a, &v, m);
+            uint32_t w[4] = {strcmp(m, "or") ? 0u : 1u, a, 0u, v};
+            int k = (int)cheats.size();
+            for (int i = 0; i < 4; i++) {
+                t->cht_we = 1; t->cht_wa = 4 * k + i; t->cht_wd = w[i];
+                clock();
+            }
+            t->cht_we = 0;
+            cheats.push_back({a, v});
+            if (e == std::string::npos) break;
+            pos = e + 1;
+        }
+        t->cht_n = cheats.size();
+    }
+
     // ---------------------------------------------------------------- run
     t->run = 1;
     uint64_t run0 = cyc, ppc_insns = 0, dsp_insns = 0, overruns = 0, v_wait = 0, v_writes = 0, d_idle = 0;
-    int frame = 0, prev_vpos = FRAME_LINE;
     // +pause=F,N: the pause input from frame F for N frames
     int pause_f = 1 << 30, pause_n = 0;
     if ((s = Verilated::commandArgsPlusMatch("pause=")) && *s) sscanf(s + 7, "%d,%d", &pause_f, &pause_n);
     bool fail = false;
+    uint32_t ppc_pc_now = 0;
     uint64_t limit = (uint64_t)(frames + 1) * 428 * LINE_CLOCKS;
     if (dsp_mhz > 0) { dsp_dual = true; dsp_next = t_ps + 1e6 / dsp_mhz / 2.0; dsp_lvl = 1; }
     while (frame < frames && cyc - run0 < limit && !Verilated::gotFinish()) {
         clock();
-        if (t->ppc_dbg_exec) ppc_insns++;
+        if (t->ppc_dbg_exec) { ppc_insns++; ppc_pc_now = t->ppc_dbg_pc; }
+        // a port A, B or C request unanswered for 100k clocks, reported once a port
+        {
+            static uint64_t wt[3] = {0, 0, 0}; static bool told[3] = {false, false, false};
+            bool rq[3] = {(bool)t->a_req, (bool)t->b_req, (bool)t->c_req};
+            uint32_t ad[3] = {t->a_addr, t->b_addr, t->c_addr};
+            for (int k = 0; k < 3; k++) {
+                wt[k] = rq[k] ? wt[k] + 1 : 0;
+                if (wt[k] == 100000 && !told[k]) {
+                    told[k] = true;
+                    fprintf(stderr, "frame %d line %d: port %c request at %06X unanswered for 100k clocks (we %d)\n",
+                            frame + 1, (int)t->vpos, "ABC"[k], ad[k], k == 0 ? t->a_we : k == 1 ? t->b_we : 0);
+                }
+            }
+        }
+        // +trapat=<hex>: the PPC's last 64 PCs when it first executes there
+        {
+            static const char *ta = Verilated::commandArgsPlusMatch("trapat=");
+            static uint32_t trap = ta && *ta ? (uint32_t)strtoul(ta + 8, nullptr, 16) : 0;
+            static uint32_t ring[64]; static unsigned rn = 0; static bool done = false;
+            if (trap && t->ppc_dbg_exec && !done) {
+                ring[rn++ & 63] = t->ppc_dbg_pc;
+                if (t->ppc_dbg_pc == trap) {
+                    done = true;
+                    fprintf(stderr, "frame %d line %d: PPC at %08X after", frame + 1, (int)t->vpos, trap);
+                    for (unsigned i = rn - 64; i != rn; i++) fprintf(stderr, " %08X", ring[i & 63]);
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
         // +ppcpcs: the PPC's executed PCs, one a line (hex), into <snap>/rtl_ppc_pcs.txt
         {
             static FILE *ppcs = Verilated::commandArgsPlusMatch("ppcpcs")[0]
@@ -740,6 +936,11 @@ int main(int argc, char **argv) {
         }
         if (t->ev_v_wait) v_wait++;
         if (t->ev_dsp_idle) d_idle++;
+        // the SHARC waiting on its external bus (clk clocks), and how many of them on reads
+        if (t->rootp->tb_board__DOT__dut__DOT__dx_req && !t->rootp->tb_board__DOT__dut__DOT__dx_ack) {
+            dx_wait++;
+            if (!t->rootp->tb_board__DOT__dut__DOT__dx_we) dx_rwait++;
+        }
         if (t->ev_v_write) v_writes++;
         if (t->v_ring_bad) ring_bad++;
         if (ddr3) {
@@ -770,6 +971,22 @@ int main(int argc, char **argv) {
             frame++;
             t->pause = frame >= pause_f && frame < pause_f + pause_n;
             std::string fd = snap + "/f" + std::to_string(frame) + "/";
+            if (FILE *fx = fopen((fd + "voodoo0.txt").c_str(), "r")) fclose(fx);
+            else {
+                // past MAME's frames (+frames= beyond the snapshot's): the board runs on, its
+                // picture written every 20 frames
+                if (frame % (Verilated::commandArgsPlusMatch("everyshot")[0] ? 1 : 20) == 0) {
+                    FILE *fr = fopen((snap + "/rtl_screen_f" + std::to_string(frame) + ".ppm").c_str(), "wb");
+                    fprintf(fr, "P6\n512 384\n255\n");
+                    fwrite(screen.data(), 1, screen.size(), fr);
+                    fclose(fr);
+                }
+                fprintf(stderr, "frame %d at %llu clocks: PPC %llu, SHARC %llu instructions, PPC at %08X (past MAME's frames)\n",
+                        frame, (unsigned long long)(cyc - run0), (unsigned long long)ppc_insns,
+                        (unsigned long long)dsp_insns, ppc_pc_now);
+                prev_vpos = t->vpos;
+                continue;
+            }
             auto mfi = load_items(fd + "voodoo0.txt");
             auto mfb = load_bytes(fd + "fb.bin", 2u << 20);
             uint32_t mfront = need(mfi, "m_frontbuf"), moffs = need(mfi, "m_rgboffs", mfront);
@@ -840,6 +1057,35 @@ int main(int argc, char **argv) {
                         frame, dd[13], dd[12], dd[11]);
                 memset(dd, 0, sizeof dd); memset(dc, 0, sizeof dc);
             }
+            fprintf(stderr, "frame %d port A: reads work %llu, ROM %llu, char %llu (sequential %llu); writes %llu\n", frame,
+                    (unsigned long long)ast[0], (unsigned long long)ast[1], (unsigned long long)ast[2],
+                    (unsigned long long)a_seq, (unsigned long long)a_wr);
+            for (auto &ch : cheats) {
+                uint32_t a = ch.first & 0x3FFFFF;
+                fprintf(stderr, "frame %d cheat %08X: %02X (wants %02X)\n", frame, ch.first,
+                        (work[a >> 2] >> (8 * (3 - (a & 3)))) & 0xFF, ch.second);
+            }
+            if (acache) fprintf(stderr, "frame %d port A cache: %llu hits, %llu misses, %llu writes waited for the queue\n",
+                                frame, (unsigned long long)pa_hits, (unsigned long long)pa_misses, (unsigned long long)pa_wfull);
+            memset(ast, 0, sizeof ast); a_wr = 0; a_seq = 0; pa_hits = pa_misses = pa_wfull = 0;
+            fprintf(stderr, "frame %d: SHARC waited %llu clocks on its bus (%llu on reads)\n", frame, (unsigned long long)dx_wait, (unsigned long long)dx_rwait);
+            if (dsp_prof_on) {
+                static const char *pn[9] = {"exec", "slow", "dma", "busy", "stall", "squash", "hazard", "refill", "empty"};
+                fprintf(stderr, "frame %d SHARC clocks:", frame);
+                for (int k = 0; k < 9; k++) fprintf(stderr, " %s %llu", pn[k], (unsigned long long)dprof[k]);
+                fprintf(stderr, "; DMA engine busy %llu clocks, %llu quanta", (unsigned long long)e_clk, (unsigned long long)e_quanta);
+                e_clk = e_quanta = 0;
+                fprintf(stderr, "\n");
+                memset(dprof, 0, sizeof dprof);
+                std::vector<std::pair<uint64_t, uint32_t>> v;
+                for (auto &e : dslow) v.push_back({e.second, e.first});
+                std::sort(v.rbegin(), v.rend());
+                FILE *sp = fopen((snap + "/board_slow_pcs_f" + std::to_string(frame) + ".txt").c_str(), "w");
+                for (auto &e : v) fprintf(sp, "%05X %llu\n", e.second, (unsigned long long)e.first);
+                fclose(sp);
+                dslow.clear();
+            }
+            dx_wait = dx_rwait = 0;
             fprintf(stderr, "frame %d: SHARC waited %llu clocks on %llu Voodoo writes, idle %llu clocks\n", frame,
                     (unsigned long long)v_wait, (unsigned long long)v_writes, (unsigned long long)d_idle);
             fprintf(stderr, "frame %d at %llu clocks: PPC %llu, SHARC %llu instructions; front buffer RTL %u at %06X, "

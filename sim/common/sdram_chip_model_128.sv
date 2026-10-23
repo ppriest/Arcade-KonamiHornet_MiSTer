@@ -68,8 +68,13 @@ module sdram_chip_model_64 #(
 	// after the command's edge (data on DQ for the controller's sample at CL), and a burst in
 	// progress runs on until then (read-to-read truncation). The model this came from started the
 	// new burst at once, which only matched the double read at CL2.
-	typedef struct { longint start; logic [9:0] col; logic [1:0] bank; int len; } rd_t;
-	rd_t     rq [$];
+	// READs waiting for their burst: a ring of four (sim/board_tb builds with --savable, which
+	// cannot save a queue of structs)
+	longint  rq_start [4];
+	logic [9:0] rq_col [4];
+	logic [1:0] rq_bank [4];
+	int      rq_len [4];
+	int      rq_h = 0, rq_n = 0;
 	longint  t = 0;
 	logic [9:0] rcol;
 	logic [1:0] rbank;
@@ -84,9 +89,9 @@ module sdram_chip_model_64 #(
 		int unsigned widx;
 
 		driving <= 1'b0;
-		if (rq.size() != 0 && rq[0].start <= t) begin
-			rcol = rq[0].col; rbank = rq[0].bank; rburst_left = rq[0].len;
-			void'(rq.pop_front());
+		if (rq_n != 0 && rq_start[rq_h] <= t) begin
+			rcol = rq_col[rq_h]; rbank = rq_bank[rq_h]; rburst_left = rq_len[rq_h];
+			rq_h = (rq_h + 1) % 4; rq_n = rq_n - 1;
 		end
 		if (rburst_left > 0) begin
 			driving     <= 1'b1;
@@ -104,8 +109,14 @@ module sdram_chip_model_64 #(
 				if (!SDRAM_A[11]) mem[widx][7:0]  <= SDRAM_DQ[7:0];
 				if (!SDRAM_A[12]) mem[widx][15:8] <= SDRAM_DQ[15:8];
 			end
-			CMD_READ: rq.push_back('{start: t + longint'(cas_latency_field) - 1, col: SDRAM_A[9:0],
-			                         bank: SDRAM_BA, len: int'(burst_words)});
+			CMD_READ: begin
+				if (rq_n == 4) $error("sdram model: more than four READs waiting");
+				rq_start[(rq_h + rq_n) % 4] = t + longint'(cas_latency_field) - 1;
+				rq_col[(rq_h + rq_n) % 4] = SDRAM_A[9:0];
+				rq_bank[(rq_h + rq_n) % 4] = SDRAM_BA;
+				rq_len[(rq_h + rq_n) % 4] = int'(burst_words);
+				rq_n = rq_n + 1;
+			end
 			default: ; // NOP / PRECHARGE / AUTO_REFRESH: nothing to model
 		endcase
 		t = t + 1;

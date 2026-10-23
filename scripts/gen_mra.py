@@ -11,8 +11,11 @@ builds that image from the .mra with scripts/mra.py (mra-tools-c's semantics) an
 for byte with scripts/rom_images.py's images and the set's files; it writes nothing if they
 differ. <mameversion> comes from MAME_EXE.
 """
+import re
 import subprocess
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -43,11 +46,87 @@ SETS = {
 }
 
 
+CHEAT_MAX = 16                          # KonamiHornet.sv's store: 16 codes
+SEVEN_ZIP = Path("C:/Program Files/7-Zip/7z.exe")
+
+
+def cheat_codes(script):
+    """A MAME cheat script's actions as codes (flags, address, value), or None if one is not a byte
+    write the core can apply every frame: pb@a=v, or pb@a=v|(pb@a BAND ~v) (an OR)."""
+    codes = []
+    for act in script.findall("action"):
+        s = re.sub(r"\s+", "", act.text or "")
+        m = re.fullmatch(r"maincpu\.pb@([0-9A-Fa-f]+)=([0-9A-Fa-f]+)", s)
+        if m:
+            codes.append((0, int(m[1], 16), int(m[2], 16)))
+            continue
+        m = re.fullmatch(r"maincpu\.pb@([0-9A-Fa-f]+)=([0-9A-Fa-f]+)\|\(maincpu\.pb@\1BAND~\2\)", s)
+        if m:
+            codes.append((1, int(m[1], 16), int(m[2], 16)))
+            continue
+        return None
+    return codes
+
+
+def mame_cheats(setname, mame_dir):
+    """[(name, codes)] from MAME's cheat.7z for the set; the run scripts (an on-only script is applied
+    every frame too), a parameter's values as one cheat each. Others are left out."""
+    archive = Path(mame_dir) / "cheat.7z"
+    if not archive.exists() or not SEVEN_ZIP.exists():
+        return []
+    with tempfile.TemporaryDirectory() as d:
+        subprocess.run([str(SEVEN_ZIP), "e", "-y", f"-o{d}", str(archive), f"{setname}.xml"],
+                       capture_output=True, check=False)
+        f = Path(d) / f"{setname}.xml"
+        if not f.exists():
+            return []
+        root = ET.parse(f).getroot()
+    out = []
+    for ch in root.findall("cheat"):
+        desc = (ch.get("desc") or "").strip()
+        if not desc:
+            continue
+        scripts = {s.get("state", "run"): s for s in ch.findall("script")}
+        script = scripts.get("run", scripts.get("on"))
+        if script is None:
+            continue
+        par = ch.find("parameter")
+        if par is None:
+            codes = cheat_codes(script)
+            if codes:
+                out.append((desc, codes))
+            continue
+        items = [(int(i.get("value"), 0), i.text.strip()) for i in par.findall("item")]
+        if not items and par.get("min") is not None:
+            lo, hi, st = (int(par.get(k), 0) for k in ("min", "max", "step"))
+            items = [(v, str(v)) for v in range(lo, hi + 1, st)]
+        for v, label in items:
+            fake = ET.fromstring("<script>" + "".join(
+                f"<action>{re.sub(r'[(]?param[)]?', f'{v:02X}', a.text)}</action>"
+                for a in script.findall("action")) + "</script>")
+            codes = cheat_codes(fake)
+            if codes:
+                out.append((f"{desc}: {label}", codes))
+    return out
+
+
+def cheats_block(cheats):
+    if not cheats:
+        return ""
+    lines = [f'    <cheats size="16" max="{CHEAT_MAX}">']
+    for name, codes in cheats:
+        hexs = "".join(f.to_bytes(4, "little").hex() + a.to_bytes(4, "little").hex() + "00000000" +
+                       v.to_bytes(4, "little").hex() for f, a, v in codes)
+        lines.append(f'        <cheat name="{name}">{hexs}</cheat>')
+    lines.append("    </cheats>")
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def crc(z, name):
     return f"{z.getinfo(name).CRC:08x}"
 
 
-def write(setname, s, romdir, mamever):
+def write(setname, s, romdir, mamever, mame_dir):
     zpath = romdir / f"{setname}.zip"
     z = zipfile.ZipFile(zpath)
 
@@ -91,7 +170,7 @@ def write(setname, s, romdir, mamever):
 {smp}    </rom>
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
     <nvram index="4" size="8192"/>
-
+{cheats_block(mame_cheats(setname, mame_dir))}
     <switches default="7B">
         <dip name="Skip Post" bits="7" ids="On,Off"/>
         <dip name="Screen Flip (H)" bits="6" ids="On,Off"/>
@@ -131,7 +210,7 @@ def main():
     ver = subprocess.run([str(exe), "-version"], capture_output=True, text=True).stdout.split()[0]
     mamever = "0" + ver.split(".")[1]
     for name in sys.argv[1:] or list(SETS):
-        write(name, SETS[name], romdir, mamever)
+        write(name, SETS[name], romdir, mamever, env["MAME_DIR"])
 
 
 if __name__ == "__main__":

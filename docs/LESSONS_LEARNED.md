@@ -502,6 +502,31 @@ Every region was indexed by low address bits, right only when the base's low bit
 palette at `0x?00400` put entry 0 at index 0x200: black sprites, right art wrong colours, on every
 board with that base and in no simulation (benches wrote the palette RAM directly).
 
+### [KonamiHornet] A write queue that may stay full must not hold back another port's writes
+
+Port A (the PPC) got a cache with posted writes: a store was acknowledged into a four-entry
+queue, and port B's (the SHARC's) writes were taken only when that queue was empty. Every bench
+passed, including a replay of 100k recorded port A accesses with B and C traffic beside it. On
+the board the boot stopped at the PPC's trap. In a store loop the PPC kept the queue full from
+frame 438 on, the SHARC's write never went, and the PPC gave up waiting for the SHARC. Each
+switch that slowed the PPC (no read hits; each access waits for the queue) let it boot, which
+pointed at a starvation, not at wrong data; a bench run from power-on with all three ports on
+the real front end and a 100k-clock watchdog on each request named the write. A port with one
+access outstanding goes ahead of a queue; and a priority rule is checked by a run long enough
+for the high-priority side to saturate, not by random traffic, which leaves gaps.
+
+### [KonamiHornet] A concatenation is unsigned: compare and extend coordinates with $signed
+
+vraster chose a scanline's right edge with `({y_cur, 4'h8} < 16'(t2y))` and computed the first
+row's offset as `17'({y_cur, 4'h8}) - 17'(t1y)`. A concatenation is unsigned, so a middle vertex
+above the top of the screen (t2y < 0) compared as huge and every visible row took the wrong edge, and
+the offset zero-extended a negative row. Edges were also 32-bit 12.20 and rounded by truncating to 12
+bits, so an edge more than 2048 pixels off the screen wrapped to the other side. On the board this was
+full-width textured bands at the bottom of the screen whenever the dragons' spheres crossed the top
+edge: only when the game state put a polygon's vertex there, which the captured windows mostly did
+not. Found by dumping the frame buffers from DDR3 on the HPS when the bands appeared (they were in
+the buffer, so the rasteriser drew them), then reading the edge code against MAME's float edges.
+
 ## Sprite lists, line buffers and snapshots
 
 ### A swap is not a copy

@@ -20,7 +20,9 @@
 // same edge; an instruction that reads them waits while W's are pending.
 //
 // DMA (channels 6 and 7): v1's one word per channel after each instruction, run by an engine
-// beside the pipeline; the next instruction's end waits for it. `serial` (benches): one
+// beside the pipeline. With DMA_LOCK (MAME's order, the benches) the next instruction's end waits
+// for it; without (the board), an instruction ends while the engine works and the next quantum
+// starts after the next instruction that finds it free (docs/HACKS.md). `serial` (benches): one
 // instruction in the pipeline at a time and DMA between them, so that the state at dbg_exec is
 // MAME's before the instruction, as v1's.
 
@@ -28,7 +30,8 @@ module sharc2_core #(
     parameter int PM_WORDS = 20480,
     parameter int DM_WORDS = 32768,     // block 1 as built: addresses above it alias (the board's 16K,
                                         // gradius4's use: docs/HACKS.md)
-    parameter bit BENCH = 0             // X reads its R operands again in serial mode (bench pokes)
+    parameter bit BENCH = 0,            // X reads its R operands again in serial mode (bench pokes)
+    parameter bit DMA_LOCK = 1          // an instruction's end waits for the last DMA quantum
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -241,6 +244,19 @@ hornet_dpram #(.AW(DMAW), .DW(32), .WORD(1), .MAXD(2048)) u_dm (   // x5 slices:
 );
 always_ff @(posedge clk) begin dma_a_q <= dma_a_c; dmb_a_q <= dmb_a_c; end
 
+// simulation: an early load is the access X makes
+// synthesis translate_off
+always_ff @(posedge clk)
+    if (ce && w_lwe[0] && w_lsrc[0] == 2'd3 && w_ebuf != dm_qa)
+        $error("SHARC: early load into R%0d took %08X, the late read %08X", w_lr[0], w_ebuf, dm_qa);
+always_ff @(posedge clk)
+    if (ce && x_valid && x_el && x_hcommit &&
+        !(x_fast && c.n == 2'd1 && c.a[0].kind == A_DM_RD && c.a[0].addr == x_ea && c.a[0].dest[3:0] == x_el_r &&
+          (c.a[0].dest_kind == 2'd0 || c.a[0].dest[7:4] == 4'h0)))
+        $error("SHARC: early load at %05X (R%0d) is not X's access (%05X, kind %0d, n %0d, fast %0d)",
+               x_ea, x_el_r, c.a[0].addr, c.a[0].kind, c.n, x_fast);
+// synthesis translate_on
+
 // simulation: an access past the block as built
 // synthesis translate_off
 always_ff @(posedge clk)
@@ -288,6 +304,16 @@ logic [31:0] x_ax, x_ay, x_mx, x_my, x_e, x_s1, x_s2;
 logic [31:0] x_fw0, x_fw1, x_fwu;
 logic [2:0]  x_fs [7];
 logic [15:0] x_late;               // R written in W by the instruction in X
+logic [15:0] x_late_ld;            // ... by its loads only (benches: dbg_hz)
+logic        x_dmw, x_pb;          // X's instruction may write data memory; may use DM port B
+logic        x_el;                 // X's load was read early (D's ld_go)
+logic [3:0]  x_el_r;               // ... into R[x_el_r]
+logic        x_ef;                 // ... in the clock before: its data is on dm_qb now
+logic [31:0] x_eld;                // ... its data, kept from that clock
+logic [31:0] w_ebuf;               // W's copy of an early load's data (w_lsrc 3)
+logic [31:0] x_ea;                 // ... its address (simulation's check)
+logic [31:0] el_d;                 // the early load's data
+logic        el_fwd;               // ... goes to R[x_el_r] at this edge
 acc_t [1:0]  x_acc;
 logic [1:0]  x_n;
 logic        x_cur;
@@ -547,6 +573,21 @@ endfunction
 dec_t   d_dec;
 cinfo_t d_ci;
 
+// the forms that may write data memory (sharc2_ops.svh's A_DM_WR), and the one that uses DM port B
+function automatic logic dm_write_form(input logic [47:0] op);
+    casez (op[47:39])
+    9'b001??????:               dm_write_form = op[44];
+    9'b0100?????, 9'b0101?????: dm_write_form = op[31] && !op[32];
+    9'b0110?????:               dm_write_form = op[39] && !op[40];
+    9'b1000?????:               dm_write_form = op[31] && !op[32];
+    9'b110??????, 9'b111??????: dm_write_form = op[44];
+    9'b000100???:               dm_write_form = op[41:40] == 2'b01;
+    9'b101??????:               dm_write_form = op[40] && !op[44];
+    9'b1001?????:               dm_write_form = !op[37];
+    default:                    dm_write_form = 1'b0;
+    endcase
+endfunction
+
 // D: the DAG registers D's instruction reads, as two ports (DAG1, DAG2: I and M; forms with a DAG
 // select bit give both the same indices), and the sums the handler and its post-modify use (I + M,
 // I + the immediate), with X's DAG writes of this clock forwarded
@@ -658,7 +699,7 @@ end
 
 always_comb
     for (int k = 0; k < 2; k++)
-        w_ld[k] = (w_lsrc[k] == 2'd0) ? dm_qa : (w_lsrc[k] == 2'd1) ? dm_qb : w_lbuf[k];
+        w_ld[k] = (w_lsrc[k] == 2'd0) ? dm_qa : (w_lsrc[k] == 2'd1) ? dm_qb : (w_lsrc[k] == 2'd3) ? w_ebuf : w_lbuf[k];
 
 
 // XR: X's R writes (its compute's and its ureg write), applied to R the clock after X commits them,
@@ -694,6 +735,13 @@ endfunction
 function automatic logic [31:0] fwd_x(input logic [31:0] v, input logic [2:0] s);
     return s[2] ? x_fwu : s[1] ? x_fw1 : s[0] ? x_fw0 : v;
 endfunction
+// ... and X's early load, which beats them: its data is in hand at the edge, not X's results
+function automatic logic [31:0] fwd_e(input logic [3:0] r);
+    return (el_fwd && x_el_r == r) ? el_d : fwd_d(r);
+endfunction
+function automatic logic [2:0] fwd_sel_e(input logic [3:0] r);
+    return (el_fwd && x_el_r == r) ? 3'b000 : fwd_sel(r);
+endfunction
 
 // ------------------------------------------------------------------------------------------
 // ALU
@@ -724,7 +772,7 @@ assign alu_astat = (x_hclk || xph == XS_EXEC) ? c.c_astat : x_c_astat;
 sharc2_alu u_alu (
     .clk, .ce,
     .d_go, .d_comp_on(d_dec.comp_on), .d_comp(pm_q[22:0]),
-    .d_ax(fwd_d(d_dec.i_ax)), .d_ay(fwd_d(d_dec.i_ay)), .d_mc_wait,
+    .d_ax(fwd_e(d_dec.i_ax)), .d_ay(fwd_e(d_dec.i_ay)), .d_mc_wait,
     .x_go, .x_drop(x_squash), .x_exec(alu_exec), .x_comp_on(x_dec.comp_on && !alu_shimm), .x_comp(x_op[22:0]),
     .x_shimm(alu_shimm), .x_shimm_op(x_op[21:16]), .x_shimm_data({x_op[30:27], x_op[15:8]}),
     .x_shimm_rn(x_op[7:4]),
@@ -1108,7 +1156,7 @@ always_comb begin
         endcase
     end
     endc = endc && x_seq;
-    if (x_seq && ((run_h && x_busy) || (endc && e_busy))) x_stall = 1'b1;
+    if (x_seq && ((run_h && x_busy) || ((DMA_LOCK || serial) && endc && e_busy))) x_stall = 1'b1;
     if (x_stall) begin x_seq = 1'b0; x_first = 1'b0; endc = 1'b0; end
     x_commit = x_commit || x_seq;
     x_go = endc;
@@ -1186,6 +1234,13 @@ sharc2_lutram #(.AW(5), .DW(32)) u_pcs (.clk, .we(pcs_we), .wa(pcs_wa), .wd(pcs_
 // ------------------------------------------------------------------------------------------
 
 logic        d_hazard, d_block;
+logic [4:0]  dbg_hz /*verilator public_flat_rd*/;
+// benches: the pipeline's state for profiles ({xph, exec, squash, X valid, X stall, X busy, DMA busy,
+// D valid, D hazard}) and X's PC
+logic [10:0] dbg_prof /*verilator public_flat_rd*/;
+logic [31:0] dbg_xpc /*verilator public_flat_rd*/;
+assign dbg_prof = {xph, x_exec_now, x_squash, x_valid, x_stall, x_busy, e_busy, d_valid, d_hazard};
+assign dbg_xpc = x_pc;
 // D's slow-unit op (FLOAT, FIX, RECIPS, MIN, FAVG, ...) reads a register X's instruction names
 wire d_slow_x = (d_ci.mc || d_ci.avg) && x_valid &&
                 ((xw_wr[0] && (xw_r0 == d_dec.i_ax || xw_r0 == d_dec.i_ay)) ||
@@ -1214,6 +1269,9 @@ always_comb begin
     // reads a register X's instruction names waits a clock for it
     d_hazard = (x_valid && late_hit(pm_q, x_late)) || d_mc_wait || d_slow_x ||
                (x_valid && x_dec.wdag && d_dec.rdag);
+    // benches: the hazard's causes (sim/sharc2_tb +pipe)
+    dbg_hz = {x_valid && late_hit(pm_q, x_late_ld), x_valid && x_dec.wdag && d_dec.rdag, d_slow_x, d_mc_wait,
+              x_valid && late_hit(pm_q, x_late)};
     // X takes D's instruction at this edge
     d_block = !d_valid || d_hazard || swap_req != 0 || (x_commit && c.swap != 0) ||
               x_pm_read || x_pm_write || booting ||
@@ -1228,6 +1286,47 @@ always_comb begin
     else f_addr = (x_valid && xph == XS_EXEC) ? Q.faddr : Q.daddr;
     f_next = d_keep ? d_pc : f_addr;
 end
+
+// D: an unconditional data-memory load into R whose address D has (the I and I + immediate forms
+// with one access) reads DM port B while it waits in D (ld_rd), so that when it goes to X (ld_go) the
+// next instruction takes the data at the following edge (latency 1) instead of from W. Not while
+// X's instruction may write data memory or use port B, nor while the DMA engine has port B, nor in
+// serial (bench) mode. ld_rd does not depend on d_go, nor the engine on ld_rd: neither path goes
+// through D's issue logic.
+logic        el_c, ld_rd, ld_go;
+logic [31:0] el_a;
+logic [DMAW-1:0] el_lo;            // el_a's low bits (0x28000's are 0), from the low bits alone: port B's address
+logic [3:0]  el_r;
+always_comb begin
+    logic [47:0] op;
+    logic        t_cond;
+    op = pm_q;
+    t_cond = op[37:33] == 5'h1F;
+    el_c = 1'b0; el_a = d_dI[0]; el_lo = d_dI[0][DMAW-1:0]; el_r = op[26:23];
+    casez (op[47:39])
+    9'b0110?????: if (!op[40] && !op[39] && t_cond) begin
+        el_c = 1'b1;
+        if (!op[38]) begin el_a = d_dI[0] + d_imm[0]; el_lo = d_dI[0][DMAW-1:0] + d_imm[0][DMAW-1:0]; end
+    end
+    9'b0100?????, 9'b0101?????: if (!op[32] && !op[31] && op[30:27] == 4'h0 && t_cond) begin
+        el_c = 1'b1;
+        if (!op[44]) begin el_a = d_dI[0] + d_dM[0]; el_lo = d_dI[0][DMAW-1:0] + d_dM[0][DMAW-1:0]; end
+    end
+    9'b1000?????: if (!op[32] && !op[31] && t_cond) el_c = 1'b1;
+    9'b101??????: if (!op[44] && !op[40] && op[39:36] == 4'h0) begin
+        el_c = 1'b1; el_a = d_dI[0] + d_imm[0]; el_lo = d_dI[0][DMAW-1:0] + d_imm[0][DMAW-1:0]; el_r = op[35:32];
+    end
+    default: ;
+    endcase
+    // port B reads el_lo for any load of these forms (a read outside block 1 is not used); only
+    // whether X takes it depends on the whole address
+    ld_rd = d_valid && el_c && !serial && !(x_valid && (x_dmw || x_pb)) && !e_portb_do;
+    ld_go = d_go && ld_rd && el_a >= 32'h28000 && el_a < 32'h28000 + DM_WORDS;
+end
+// the early load's data, and whether R[r] takes it at this edge (its instruction commits now; it
+// beats X's other results for r, as the load is applied after the compute)
+assign el_d = x_ef ? dm_qb : x_eld;
+assign el_fwd = x_valid && x_el && x_hcommit;
 
 always_comb begin
     pm_ra_c = 15'(f_addr - 32'h20000);
@@ -1269,6 +1368,7 @@ always_comb begin
     end else if (boot_pm_we) begin
         pm_we = 1'b1; pm_wa = boot_pm_wa; pm_wd = boot_pm_wd;
     end
+    if (ce && ld_rd) begin dmb_a_c = 15'(el_lo); dmb_we_c = 1'b0; dmb_wd_c = 32'h0; end
     if (ce && e_portb_do) begin
         dmb_a_c = e_portb_a; dmb_we_c = e_portb_we; dmb_wd_c = e_portb_wd;
     end
@@ -1382,8 +1482,9 @@ always_ff @(posedge clk) begin
                 for (int k = 0; k < 2; k++) begin
                     w_lwe[k] <= k < c.n && acc_is_rd(c.a[k].kind);
                     w_lr[k] <= c.a[k].dest[3:0];
-                    w_lsrc[k] <= k[1:0];
+                    w_lsrc[k] <= (k == 0 && x_el) ? 2'd3 : k[1:0];
                 end
+            w_ebuf <= el_d;
         end
         if (x_seq && x_post_loads) begin
             w_lwe <= c.lwe; w_lr <= c.lr; w_lbuf <= c.ld;
@@ -1405,6 +1506,14 @@ always_ff @(posedge clk) begin
         end
         if (x_hcommit && todo_n[OP_ACC]) begin x_acc <= c.a; x_n <= c.n; x_cur <= 1'b0; end
         if (x_seq && !x_go) xph <= (first_op(todo_n) == 4'(OP_ACC)) ? XS_ACC : XS_STEP;
+        // an external access asks for the bus in the handler's clock, not in XS_ACC's, when XS_ACC
+        // would ask at once (no access of X or the engine out, the engine idle)
+        if (x_hcommit && x_seq && !x_go && first_op(todo_n) == 4'(OP_ACC) && !x_stall &&
+            !is_dm1(c.a[0].addr) && !is_pm(c.a[0].addr) && c.a[0].addr >= 32'h100 &&
+            !xb_req && !eb_req && !e_busy && !e_start) begin
+            xb_req <= 1'b1; xb_we <= !acc_is_rd(c.a[0].kind); xb_addr <= c.a[0].addr; xb_wdata <= c.a[0].wdata[31:0];
+            xph <= XS_WAIT;
+        end
         case (xph)
         XS_ACC: if (x_valid && !x_stall) begin
             acc_t a;
@@ -1442,20 +1551,23 @@ always_ff @(posedge clk) begin
         if (x_fs_commit && c.irq_taken) irq_entry <= 1'b1;
         else if (x_exec_now) irq_entry <= 1'b0;
         if (x_go || x_squash) x_valid <= 1'b0;
+        x_ef <= ld_go;
+        if (x_ef) x_eld <= dm_qb;
+        if (ld_go) x_ea <= el_a;
         if (d_go) begin
             x_valid <= 1'b1;
             xph <= XS_EXEC;
             x_pc <= d_pc;
             x_op <= pm_q;
             x_dec <= d_dec;
-            x_ax <= fwd_d(d_dec.i_ax); x_ay <= fwd_d(d_dec.i_ay);
-            x_mx <= fwd_d(d_dec.i_mx); x_my <= fwd_d(d_dec.i_my);
-            x_e <= fwd_d(d_dec.i_e);
-            x_s1 <= fwd_d(d_dec.i_s1); x_s2 <= fwd_d(d_dec.i_s2);
-            x_fs[0] <= fwd_sel(d_dec.i_ax); x_fs[1] <= fwd_sel(d_dec.i_ay);
-            x_fs[2] <= fwd_sel(d_dec.i_mx); x_fs[3] <= fwd_sel(d_dec.i_my);
-            x_fs[4] <= fwd_sel(d_dec.i_e);
-            x_fs[5] <= fwd_sel(d_dec.i_s1); x_fs[6] <= fwd_sel(d_dec.i_s2);
+            x_ax <= fwd_e(d_dec.i_ax); x_ay <= fwd_e(d_dec.i_ay);
+            x_mx <= fwd_e(d_dec.i_mx); x_my <= fwd_e(d_dec.i_my);
+            x_e <= fwd_e(d_dec.i_e);
+            x_s1 <= fwd_e(d_dec.i_s1); x_s2 <= fwd_e(d_dec.i_s2);
+            x_fs[0] <= fwd_sel_e(d_dec.i_ax); x_fs[1] <= fwd_sel_e(d_dec.i_ay);
+            x_fs[2] <= fwd_sel_e(d_dec.i_mx); x_fs[3] <= fwd_sel_e(d_dec.i_my);
+            x_fs[4] <= fwd_sel_e(d_dec.i_e);
+            x_fs[5] <= fwd_sel_e(d_dec.i_s1); x_fs[6] <= fwd_sel_e(d_dec.i_s2);
             x_fw0 <= xw_d0; x_fw1 <= xw_d1; x_fwu <= x_uw_d;
             for (int g = 0; g < 2; g++) begin
                 x_dI[g] <= d_dI[g]; x_dM[g] <= d_dM[g];
@@ -1463,7 +1575,10 @@ always_ff @(posedge clk) begin
                 x_pd[g] <= d_pd[g];
             end
             x_aok <= d_aok;
-            x_late <= d_ci.late | d_dec.ld;
+            x_late <= d_ci.late | (d_dec.ld & ~(ld_go ? bit16(el_r) : 16'h0));
+            x_late_ld <= d_dec.ld & ~d_ci.late & ~(ld_go ? bit16(el_r) : 16'h0);
+            x_dmw <= dm_write_form(pm_q); x_pb <= pm_q[47:45] == 3'b001;
+            x_el <= ld_go; x_el_r <= el_r;
         end
 
         // ---------------------------------------------------------------- F / D
@@ -1486,10 +1601,12 @@ end
 // DMA engine
 // ------------------------------------------------------------------------------------------
 
-// a quantum starts after each instruction that leaves a channel active, and while idle
+// a quantum starts after each instruction that leaves a channel active, and while idle; without
+// DMA_LOCK, also whenever the last one is done
 assign e_start = !e_busy && run && !booting &&
                  ((x_go && ((dma_status[7:6] != 0) || c.dma_exec)) ||
-                  (Q.idle && dma_status[7:6] != 0 && !(x_valid && xph != XS_EXEC)));
+                  (Q.idle && dma_status[7:6] != 0 && !(x_valid && xph != XS_EXEC)) ||
+                  (!DMA_LOCK && !serial && dma_status[7:6] != 0));
 
 always_comb begin
     e_portb_do = 1'b0; e_portb_we = 1'b0; e_portb_a = 15'h0; e_portb_wd = 32'h0;
@@ -1514,11 +1631,39 @@ always_comb begin
     ch = e_ch[0];
     ad = e_addr(ch, e_step);
     rds = dma_reads(op_pmode[ch]);
-    if (ce && run && !booting && e_busy && e_wait && e_step == 4'd1 &&
-        (is_dm1(ad) || !(ad >= 32'h100 && !is_pm(ad)) || (ext_ack && eb_req)) &&
+    if (e_wr_now) begin ch = e_sel[0]; rds = dma_reads(op_pmode[ch]); end
+    if (ce && run && !booting &&
+        ((e_busy && e_wait && e_step == 4'd1 &&
+          (is_dm1(ad) || !(ad >= 32'h100 && !is_pm(ad)) || (ext_ack && eb_req))) || e_wr_now) &&
         $signed(op_src_count[ch] - {29'h0, rds}) <= 0 && (!op_chained[ch] || op_chain_ptr[ch][17]))
         e_irq_set[16 + ch] = 1'b1;
 end
+
+// a word's write is done: dma_advance, and the end of the transfer (or its chain's next TCB)
+task automatic e_advance(input logic ch);
+    logic [2:0] rds;
+    rds = dma_reads(op_pmode[ch]);
+    case (rds)
+    3'd2:    op_src[ch] <= op_src[ch] + (op_src_mod[ch] << 1);
+    3'd6:    op_src[ch] <= op_src[ch] + (op_src_mod[ch] << 2) + (op_src_mod[ch] << 1);
+    default: op_src[ch] <= op_src[ch] + op_src_mod[ch];
+    endcase
+    op_dst[ch] <= op_dst[ch] + op_dst_mod[ch];
+    op_src_count[ch] <= op_src_count[ch] - {29'h0, rds};
+    e_k <= 3'd0;
+    e_ch <= {1'b0, ch} + 2'd1; e_step <= 4'd0;
+    if ($signed(op_src_count[ch] - {29'h0, rds}) <= 0) begin
+        dma_status[6 + ch] <= 1'b0;
+        op_active[ch] <= 1'b0;
+        if ((op_chain_ptr[ch] & 32'h1FFFF) != 0) begin
+            op_tcb[ch] <= 1'b1;
+            dma_status[6 + ch] <= 1'b1;
+            e_ch <= {1'b0, ch}; e_step <= 4'd2;
+        end
+    end
+endtask
+// an internal (DM or PM) write needs no clock of its own: the word is done when it is issued
+wire e_wr_now = e_busy && !e_wait && e_sel != 2'd2 && e_do && e_stp == 4'd1 && (is_dm1(e_ad) || is_pm(e_ad));
 
 always_ff @(posedge clk) begin
     e_pmw <= 1'b0;
@@ -1559,8 +1704,11 @@ always_ff @(posedge clk) begin
             e_busy <= 1'b1; e_wait <= 1'b0;
             e_ch <= 2'd0; e_step <= 4'd0; e_k <= 3'd0;
         end else if (e_busy && !e_wait) begin
-            if (e_sel == 2'd2) e_busy <= 1'b0;                  // no channel left
-            else if (e_do) begin
+            if (e_sel == 2'd2) begin                          // no channel left
+                // without DMA_LOCK the next quantum starts at once if a channel is still active
+                if (!DMA_LOCK && !serial && dma_status[7:6] != 0) begin e_ch <= 2'd0; e_step <= 4'd0; e_k <= 3'd0; end
+                else e_busy <= 1'b0;
+            end else if (e_do) begin
                 e_ch <= e_sel;
                 e_step <= e_stp;
                 if (!is_dm1(e_ad) && e_ad >= 32'h100 && !is_pm(e_ad)) begin
@@ -1568,7 +1716,8 @@ always_ff @(posedge clk) begin
                 end else if (is_pm(e_ad) && e_stp == 4'd1) begin
                     e_pmw <= 1'b1; e_pmw_a <= 15'(e_ad - 32'h20000); e_pmw_d <= e_pack;
                 end
-                e_wait <= 1'b1;
+                if (e_wr_now) e_advance(e_sel[0]);
+                else e_wait <= 1'b1;
             end
         end else if (e_busy && e_wait) begin
             logic [31:0] ad, d;
@@ -1596,28 +1745,8 @@ always_ff @(posedge clk) begin
                     e_pack <= w;
                     if (e_k + 3'd1 < dma_reads(pmo)) e_k <= e_k + 3'd1;
                     else begin e_data <= w[31:0]; e_step <= 4'd1; end
-                end else if (e_step == 4'd1) begin
-                    logic [2:0] rds;
-                    rds = dma_reads(op_pmode[ch]);
-                    // dma_advance
-                    case (rds)
-                    3'd2:    op_src[ch] <= op_src[ch] + (op_src_mod[ch] << 1);
-                    3'd6:    op_src[ch] <= op_src[ch] + (op_src_mod[ch] << 2) + (op_src_mod[ch] << 1);
-                    default: op_src[ch] <= op_src[ch] + op_src_mod[ch];
-                    endcase
-                    op_dst[ch] <= op_dst[ch] + op_dst_mod[ch];
-                    op_src_count[ch] <= op_src_count[ch] - {29'h0, rds};
-                    e_k <= 3'd0;
-                    if ($signed(op_src_count[ch] - {29'h0, rds}) <= 0) begin
-                        dma_status[6 + ch] <= 1'b0;
-                        op_active[ch] <= 1'b0;
-                        if ((op_chain_ptr[ch] & 32'h1FFFF) != 0) begin
-                            op_tcb[ch] <= 1'b1;
-                            dma_status[6 + ch] <= 1'b1;
-                            e_step <= 4'd2;
-                        end else begin e_ch <= e_ch + 2'd1; e_step <= 4'd0; end
-                    end else begin e_ch <= e_ch + 2'd1; e_step <= 4'd0; end
-                end else begin
+                end else if (e_step == 4'd1) e_advance(ch);
+                else begin
                     tcb[e_step - 4'd2] <= d;
                     if (e_step == 4'd9) begin
                         logic [7:0][31:0] t;
@@ -1722,7 +1851,7 @@ task automatic boot_apply();
     Q.sysstat <= Q.sysstat & 32'h0000_0FF0;
     Q.iop_delay_cycles <= 32'h0;
     run <= 1'b1;
-    d_valid <= 1'b0; x_valid <= 1'b0; xph <= XS_EXEC; w_lwe <= 2'b00; xr_we <= 3'b000; swap_req <= '0;
+    d_valid <= 1'b0; x_valid <= 1'b0; xph <= XS_EXEC; w_lwe <= 2'b00; xr_we <= 3'b000; swap_req <= '0; x_ef <= 1'b0; x_el <= 1'b0;
 endtask
 
 // ------------------------------------------------------------------------------------------

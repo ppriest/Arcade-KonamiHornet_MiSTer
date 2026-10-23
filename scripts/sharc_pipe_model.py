@@ -140,9 +140,9 @@ def decode(op):
 
 
 def pcs():
-    f = win / "rtl.tr"
-    if not f.exists():
-        f = win / "trace.tr"
+    # an RTL trace carries the opcodes (sim/sharc2_tb's rtl2.tr, v1's rtl.tr); MAME's trace.tr
+    # carries the disassembly instead
+    f = next((win / n for n in ("rtl2.tr", "rtl.tr") if (win / n).exists()), win / "trace.tr")
     with open(f) as fh:
         for k, line in enumerate(fh):
             if k >= args.n:
@@ -164,6 +164,9 @@ configs = [
     # name, latencies (fx, fp, ld), taken-jump refill, delayed-jump refill
     ("ideal 1/1/1 b0", 1, 1, 1, 0, 0),
     ("1/2/2 b2", 1, 2, 2, 2, 0),
+    ("1/2/1 b2", 1, 2, 1, 2, 0),
+    ("1/1/2 b2", 1, 1, 2, 2, 0),
+    ("1/2/2 b1", 1, 2, 2, 1, 0),
     ("1/3/2 b2", 1, 3, 2, 2, 0),
     ("2/3/2 b2", 2, 3, 2, 2, 0),
     ("1/3/3 b3", 1, 3, 3, 3, 1),

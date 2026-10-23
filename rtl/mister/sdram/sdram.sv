@@ -65,6 +65,12 @@ module sdram
 	input             wrl1,
 	input             wrh1,
 	input      [15:0] din1,
+	// [Hornet] port 1 only: with w2_1, a write writes din1 at addr1 and din1b (byte lanes
+	// wrl1b/wrh1b) at addr1 + 1 in one row activation (addr1 even: the same row)
+	input             w2_1,
+	input      [15:0] din1b,
+	input             wrl1b,
+	input             wrh1b,
 	output     [63:0] dout1,
 	input             req1,
 	output reg        ack1 = 1'b0,
@@ -111,6 +117,7 @@ localparam STATE_LAST   = STATE_READ3;         // last state in cycle
 // [GX] a double read: the second READ four cycles after the first, its
 // burst following the first's without a gap, and the cycle four longer
 localparam STATE_CONT2  = STATE_CONT+5'd4;
+localparam STATE_CONTW  = STATE_CONT+5'd1;    // [Hornet] a two-halfword write's second WRITE
 localparam STATE_READ4  = STATE_READ0+5'd4;
 localparam STATE_READ5  = STATE_READ0+5'd5;
 localparam STATE_READ6  = STATE_READ0+5'd6;
@@ -127,6 +134,9 @@ reg        chip = 1'b0;    // [GX] byte address bit 26: which chip of the 128 MB
 reg        rchip = 1'b0;   // [GX] the chip the next refresh goes to
 reg        ichip = 1'b0;   // [GX] the chip an initialisation command goes to
 reg [15:0] data;
+reg [15:0] data2;  // [Hornet] a two-halfword write's second halfword, its byte lanes, and whether
+reg  [1:0] dqm2;   // the write has one
+reg        w2 = 1'b0;
 reg        we;
 reg        dbl = 0;   // [GX] this access is a double read
 reg  [1:0] ba = 0;
@@ -215,6 +225,7 @@ always @(posedge clk) begin
 		else if (ack0 != req0) begin
 			{chip,a25,ba,a} <= addr0;
 			data <= din0;
+			w2 <= 1'b0;   // [Hornet]
 			we <= wr[0];
 			dbl <= dbl0 && !wr[0];
 			dqm <= wr[0] ? ~{wrh0,wrl0} : 2'b00;
@@ -229,6 +240,7 @@ always @(posedge clk) begin
 			we <= wr[1];
 			dbl <= 0;
 			dqm <= wr[1] ? ~{wrh1,wrl1} : 2'b00;
+			w2 <= wr[1] && w2_1; data2 <= din1b; dqm2 <= ~{wrh1b,wrl1b};   // [Hornet]
 			active <= 1;
 			ram_req[1] <= 1;
 			rfs <= rfs2;
@@ -237,6 +249,7 @@ always @(posedge clk) begin
 		else if (ack2 != req2) begin
 			{chip,a25,ba,a} <= addr2;
 			data <= din2;
+			w2 <= 1'b0;   // [Hornet]
 			we <= wr[2];
 			dbl <= 0;
 			dqm <= wr[2] ? ~{wrh2,wrl2} : 2'b00;
@@ -355,6 +368,12 @@ always @(posedge clk) begin
 	// [GX] a double read's second READ, the row still open
 	if(mode == MODE_NORMAL && state == STATE_CONT2 && active && !we && dbl)
 		{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
+	// [Hornet] a two-halfword write's second WRITE, the row still open, which precharges
+	if(mode == MODE_NORMAL && state == STATE_CONTW && active && we && w2) begin
+		{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_WRITE;
+		dq_oe  <= 1'b1;
+		dq_out <= data2;
+	end
 
 	if(mode == MODE_NORMAL) begin
 		casex(state)
@@ -378,7 +397,9 @@ always @(posedge clk) begin
 			// not use (FG-3 needs 56.5 MB).
 			// [GX] a double read's first READ leaves the row open (A10 low)
 			// for its second, at the next four columns, which precharges
-			STATE_CONT:  SDRAM_A <= {dqm, !dbl, a25, a[9:1]};
+			STATE_CONT:  SDRAM_A <= {dqm, !(dbl || (we && w2)), a25, a[9:1]};
+			// [Hornet] the second halfword of a two-halfword write: the next column
+			STATE_CONTW: if (we && w2) SDRAM_A <= {dqm2, 1'b1, a25, a[9:2], 1'b1};
 			STATE_CONT2: if (dbl) SDRAM_A <= {dqm, 1'b1, a25, a[9:3], 2'b00} | 13'd4;
 		endcase
 	end

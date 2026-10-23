@@ -184,7 +184,7 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 * Pause (with CPU suspended): done (the PPC stops; the SHARC, Voodoo and picture keep running)
 * Sound: yes, from the HPS (`arcsnd`)
 * Savestates (optional): not yet
-* Cheats (optional): not yet
+* Cheats (optional): yes, MAME's 24 Gradius IV cheats in the `.mra` (applied once a frame; `docs/HACKS.md`)
 
 ### Todo
 

@@ -47,6 +47,7 @@ module hornet_board #(
     output logic        b_we,
     output logic [22:0] b_addr,
     output logic [31:0] b_wdata,
+    output logic [2:0]  b_left,         // a line read: its words still to come after this one
     input  logic        b_ack,
     input  logic [31:0] b_rdata,
 
@@ -113,6 +114,13 @@ module hornet_board #(
     // pause: no new PPC instruction fetch starts and its timebase stops; the PPC stalls when its
     // queue runs dry, its data accesses and the SHARC, Voodoo and picture running on
     input  logic        pause,
+
+    // cheats: the codes (16 bytes each: flags, PPC address, compare, value, little-endian words),
+    // written a word at a time, and how many there are (0: none)
+    input  logic        cht_we,
+    input  logic [5:0]  cht_wa,
+    input  logic [31:0] cht_wd,
+    input  logic [4:0]  cht_n,
 
     // video state (the harness samples the front buffer at vblank)
     output logic        vblank,
@@ -361,6 +369,10 @@ wire d_spu  = da >= 32'h4000_0000 && da < 32'h4000_0010;
 wire [23:0] d_pa = ppc_port_a(d_addr);
 wire [23:0] i_pa = ppc_port_a(i_addr);
 
+// a cheat's write (below), which drops its line from the instruction cache as a store does
+logic        ch_st;
+logic [22:0] ch_pa;
+
 // the PPC's fetches through its instruction cache (hornet_icache), whose fills go on port A
 logic        ic_mreq, ic_mack;
 logic [22:0] ic_maddr;
@@ -368,7 +380,7 @@ hornet_icache u_icache (
     .clk, .reset, .run, .pause,
     .req(i_req), .addr(i_pa[22:0]), .ack(i_ack), .rdata(i_rdata),
     .m_req(ic_mreq), .m_addr(ic_maddr), .m_ack(ic_mack), .m_rdata(a_rdata),
-    .st(d_req && d_we && d_pa[23]), .st_addr(d_pa[22:0])
+    .st((d_req && d_we && d_pa[23]) || ch_st), .st_addr(ch_st ? ch_pa : d_pa[22:0])
 );
 
 // the byte lane of a byte-wide device: d_be[3] is byte 0
@@ -376,8 +388,59 @@ function automatic logic [1:0] lane(input logic [3:0] be);
     lane = be[3] ? 2'd0 : be[2] ? 2'd1 : be[1] ? 2'd2 : 2'd3;
 endfunction
 
+// ------------------------------------------------------------------------------------------
+// Cheats: once a frame, each code's byte written through port A (lowest priority), OR-ed into the
+// byte read first when its flags' bit 0 is set (MAME's "pb@a = v | (pb@a BAND ~v)"); a write drops
+// the instruction cache's line, as a PPC store does (a code patch). Codes outside port A's
+// memories are skipped. docs/HACKS.md: a code applies every frame, its "off" state is not restored.
+// ------------------------------------------------------------------------------------------
+logic [31:0] cht_q;
+logic [5:0]  cht_ra;
+sharc2_lutram #(.AW(6), .DW(32)) u_cht (.clk, .we(cht_we), .wa(cht_wa), .wd(cht_wd), .ra(cht_ra), .rd(cht_q));
+
+typedef enum logic [2:0] { CH_IDLE, CH_FLAGS, CH_ADDR, CH_VAL, CH_RD, CH_WR, CH_INV, CH_NEXT } ch_t;
+ch_t         chs;
+logic [3:0]  ch_k;                     // the code
+logic        ch_or;                    // its flags' bit 0
+logic [31:0] ch_ppc;                   // its PPC address
+logic [7:0]  ch_val, ch_byte;
+logic        ch_req, ch_we, ch_out, ch_ack, ch_vb;
+logic [3:0]  ch_be;
+wire  [23:0] ch_map = ppc_port_a(ch_ppc[30:0]);
+always_comb cht_ra = {ch_k, chs == CH_FLAGS ? 2'd0 : chs == CH_ADDR ? 2'd1 : 2'd3};
+
+always_ff @(posedge clk) begin
+    ch_st <= 1'b0;
+    ch_vb <= vblank;
+    case (chs)
+    CH_IDLE: if (run && vblank && !ch_vb && cht_n != 5'd0) begin ch_k <= 4'd0; chs <= CH_FLAGS; end
+    CH_FLAGS: begin ch_or <= cht_q[0]; chs <= CH_ADDR; end
+    CH_ADDR:  begin ch_ppc <= cht_q; chs <= CH_VAL; end
+    CH_VAL: begin
+        ch_val <= cht_q[7:0];
+        ch_pa <= ch_map[22:0];
+        ch_be <= 4'b1000 >> ch_ppc[1:0];
+        if (!ch_map[23]) chs <= CH_NEXT;
+        else if (ch_or) begin ch_req <= 1'b1; ch_we <= 1'b0; chs <= CH_RD; end
+        else begin ch_req <= 1'b1; ch_we <= 1'b1; ch_byte <= cht_q[7:0]; chs <= CH_WR; end
+    end
+    CH_RD: if (ch_ack) begin
+        ch_byte <= a_rdata[8 * (3 - ch_ppc[1:0]) +: 8] | ch_val;
+        ch_we <= 1'b1; chs <= CH_WR;                       // ch_req stays up: the write next
+    end
+    CH_WR: if (ch_ack) begin ch_req <= 1'b0; chs <= CH_INV; end
+    CH_INV: if (!d_req) begin ch_st <= 1'b1; chs <= CH_NEXT; end   // the cache's store input is free
+    CH_NEXT: if ({1'b0, ch_k} + 5'd1 >= cht_n) chs <= CH_IDLE; else begin ch_k <= ch_k + 4'd1; chs <= CH_FLAGS; end
+    default: chs <= CH_IDLE;
+    endcase
+    // a request is out from its grant to its acknowledge
+    if (ch_ack) ch_out <= 1'b0;
+    else if (ch_req && a_own_c && a_busy) ch_out <= 1'b1;
+    if (reset) begin chs <= CH_IDLE; ch_req <= 1'b0; ch_out <= 1'b0; end
+end
+
 // port A: one access at a time, data side first
-logic        ai_pend, ad_pend, a_busy, a_own_d;
+logic        ai_pend, ad_pend, a_busy, a_own_d, a_own_c;
 logic [22:0] ai_addr, ad_addr;
 logic        ad_we;
 logic [3:0]  ad_be;
@@ -426,7 +489,8 @@ assign ev_dev_addr = dv_addr;
 assign ev_dev_data = dv_we ? dv_wdata : d_rdata;
 assign ev_dev_we = dv_we;
 
-assign ic_mack = a_ack && a_busy && !a_own_d;
+assign ic_mack = a_ack && a_busy && !a_own_d && !a_own_c;
+assign ch_ack  = a_ack && a_busy && a_own_c;
 always_comb begin
     d_ack = (a_ack && a_busy && a_own_d) || dv_pend;
     d_rdata = a_rdata;
@@ -494,22 +558,27 @@ always_ff @(posedge clk) begin
         // port A: the next access, the data side first, a request of this clock or a waiting one;
         // what does not go now waits in ad_* / ai_*
         begin
-            logic dn, in_, free, go_d, go_i;
+            logic dn, in_, free, go_d, go_i, go_c;
             dn  = d_req && d_pa[23];
             in_ = ic_mreq;
             free = !a_busy || a_ack;
             go_d = free && (ad_pend || dn);
             go_i = free && !go_d && (ai_pend || in_) && !pause;
-            if (a_busy && a_ack) a_busy <= 1'b0;
+            go_c = free && !go_d && !go_i && ch_req && !ch_out && !ch_ack;
+            if (a_busy && a_ack) begin a_busy <= 1'b0; a_own_c <= 1'b0; end
+            if (go_c) begin
+                a_busy <= 1'b1; a_own_d <= 1'b0; a_own_c <= 1'b1;
+                a_addr <= ch_pa; a_we <= ch_we; a_be <= ch_be; a_wdata <= {4{ch_byte}};
+            end
             if (go_d) begin
-                a_busy <= 1'b1; a_own_d <= 1'b1;
+                a_busy <= 1'b1; a_own_d <= 1'b1; a_own_c <= 1'b0;
                 if (ad_pend) begin
                     a_addr <= ad_addr; a_we <= ad_we; a_be <= ad_be; a_wdata <= ad_wdata;
                 end else begin
                     a_addr <= d_pa[22:0]; a_we <= d_we; a_be <= d_be; a_wdata <= d_wdata;
                 end
             end else if (go_i) begin
-                a_busy <= 1'b1; a_own_d <= 1'b0;
+                a_busy <= 1'b1; a_own_d <= 1'b0; a_own_c <= 1'b0;
                 a_addr <= ai_pend ? ai_addr : ic_maddr; a_we <= 1'b0; a_be <= 4'hF;
             end
             // waiting requests: taken, or newly arrived and not taken
@@ -536,7 +605,7 @@ logic        x_req, x_we, x_ack;
 logic [31:0] x_addr, x_wdata, x_rdata;
 
 // ---------------------------------------------------------------- the SHARC's clock domain
-logic        dx_req, dx_we, dx_ack;
+logic        dx_req /*verilator public_flat_rd*/, dx_we /*verilator public_flat_rd*/, dx_ack /*verilator public_flat_rd*/;
 logic [31:0] dx_addr, dx_wdata, dx_rdata;
 logic        dsp_reset, dsp_ce, dsp_ce1, dsp_boot, sh_bank_d;
 logic [1:0]  dsp_irq;
@@ -550,7 +619,7 @@ hornet_pulse u_sboot (.clk_a(clk), .a(ev_dsp_reset), .clk_b(clk_dsp), .b(dsp_boo
 hornet_pulse u_sirq0 (.clk_a(clk), .a(dsp_irq_assert[0]), .clk_b(clk_dsp), .b(dsp_irq[0]));
 hornet_pulse u_sirq1 (.clk_a(clk), .a(dsp_irq_assert[1]), .clk_b(clk_dsp), .b(dsp_irq[1]));
 
-sharc2_core #(.DM_WORDS(16384)) dsp (     // gradius4 uses below 0x2A800 (docs/HACKS.md)
+sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0)) dsp (     // gradius4 uses below 0x2A800 (docs/HACKS.md)
     .clk(clk_dsp), .reset(dsp_reset), .ce(dsp_ce), .boot(dsp_boot), .serial(1'b0),
     .ext_req(dx_req), .ext_we(dx_we), .ext_addr(dx_addr), .ext_wdata(dx_wdata),
     .ext_ack(dx_ack), .ext_rdata(dx_rdata),
@@ -704,6 +773,7 @@ wire xs_b    = xs_r500 || xs_r14 || xs_cg;
 assign b_req   = x_req && xs_b;
 assign b_we    = x_we;
 assign b_wdata = x_wdata;
+assign b_left  = (c_line && !x_we) ? 3'd7 - lk : 3'd0;
 always_comb
     if (xs_r500)     b_addr = {3'd0, x_addr[19:0]};
     else if (xs_r14) b_addr = {3'd1, x_addr[19:0]};
