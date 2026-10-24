@@ -37,8 +37,6 @@ for name, w in ins:
         lines.append(f"    assign {name} = '0;")
     elif name == "run":
         lines.append(f"    assign {name} = 1'b1;")
-    elif name == "line_clocks":
-        lines.append(f"    assign {name} = 16'd2560;")
     else:
         bits = [f"lfsr[{(off + k) % 256}]" for k in range(w)]
         off += w

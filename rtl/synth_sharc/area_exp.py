@@ -23,6 +23,17 @@ VARIANTS = {
     "no_handler": [("core", "        execute_op(c, x_op, (xph == XS_EXEC) ? rq_n.pre_cond : x_rq.pre_cond);\n", "")],
     "no_iopw": [("core", "            iop_write(c, a.addr[7:0], a.wdata[31:0]);", "")],
     "no_getureg": [("core", "        c.usrc = get_ureg(c, usrc_sel(x_op));", "        c.usrc = 32'h0;")],
+    # the DMA registers at the chip's widths: C, EC 16 bits, II 17, CP 18, GP none
+    "narrow": [("ops", "    8'h40: n.dma_int_index[0] = d;", "    8'h40: n.dma_int_index[0] = d & 32'h1FFFF;"),
+               ("ops", "    8'h42: n.dma_int_count[0] = d;", "    8'h42: n.dma_int_count[0] = d & 32'hFFFF;"),
+               ("ops", "    8'h43: n.dma_chain_ptr[0] = d;", "    8'h43: n.dma_chain_ptr[0] = d & 32'h3FFFF;"),
+               ("ops", "    8'h44: n.dma_gen[0] = d;", ""),
+               ("ops", "    8'h47: n.dma_ext_count[0] = d;", "    8'h47: n.dma_ext_count[0] = d & 32'hFFFF;"),
+               ("ops", "    8'h48: n.dma_int_index[1] = d;", "    8'h48: n.dma_int_index[1] = d & 32'h1FFFF;"),
+               ("ops", "    8'h4a: n.dma_int_count[1] = d;", "    8'h4a: n.dma_int_count[1] = d & 32'hFFFF;"),
+               ("ops", "    8'h4b: n.dma_chain_ptr[1] = d;", "    8'h4b: n.dma_chain_ptr[1] = d & 32'h3FFFF;"),
+               ("ops", "    8'h4c: n.dma_gen[1] = d;", ""),
+               ("ops", "    8'h4f: n.dma_ext_count[1] = d;", "    8'h4f: n.dma_ext_count[1] = d & 32'hFFFF;")],
 }
 
 

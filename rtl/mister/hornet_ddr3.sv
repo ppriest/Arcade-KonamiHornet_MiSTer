@@ -15,7 +15,7 @@
 //           clock each. A read is issued only when the FIFO has room for all of it (credits).
 //   writes  the granted master keeps the port for its burst; its words are packed in pairs, an odd
 //           first or last word with the other half's byte enables off.
-//   order   master N-1 (the picture) first, then the others in turn, a command or a write burst at
+//   order   master N-1 (the picture) first, then PRI if set, then the others in turn, a command or a write burst at
 //           a time; the choice is registered (A_IDLE, or the last clock of the command before) a
 //           clock before the command goes (A_CMD).
 
@@ -25,7 +25,10 @@ module hornet_ddr3 #(
     // wide masters move a whole 64-bit beat a handshake: their bursts start on an 8-byte boundary
     // and count an even number of words (padding words with byte enables off); a write takes
     // m_wdata/m_be (low word) and m_wdata_hi/m_be_hi together, a read returns m_rdata and m_rdata_hi
-    parameter logic [N-1:0] WIDE = '0
+    parameter logic [N-1:0] WIDE = '0,
+    // a master served after N-1 and before the others' round (-1: none): the texture fills, which
+    // stall vraster's pipeline while they wait
+    parameter int PRI = -1
 ) (
     input  logic                 clk,
     input  logic                 reset,         // power-up only: a transaction cut short hangs the port
@@ -146,8 +149,9 @@ function automatic logic [7:0] beats(input logic [31:0] a, input logic [10:0] n)
     return 8'((11'(a[2]) + n + 11'd1) >> 1);
 endfunction
 
-// the next master: N-1 first, then from rr round; not the master being served (its request is
-// the one ending)
+// the next master: N-1 first, then PRI, then from rr round. A read is accepted when it is chosen
+// (its address and count are taken then), so a master's request when its last command ends is
+// already its next
 logic          pick_v;
 logic [MW-1:0] pick;
 always_comb begin
@@ -155,9 +159,9 @@ always_comb begin
     logic [MW-1:0] k;
     logic [N-1:0] req;
     req = m_read | m_write;
-    if (as != A_IDLE) req[g] = 1'b0;
     found = 1'b0; k = '0;
     if (req[N-1]) begin found = 1'b1; k = MW'(N - 1); end
+    else if (PRI >= 0 && req[PRI]) begin found = 1'b1; k = MW'(PRI); end
     for (int j = 0; j < N - 1; j++) begin
         logic [MW:0] i;
         i = (MW+1)'(rr) + (MW+1)'(j);
@@ -170,25 +174,25 @@ end
 wire  rd_room = int'(r_out) + int'(beats(c_addr, c_burst)) <= (1 << RAW) && tq_wp - tq_rp < 5'd15;
 wire  rd_go = as == A_CMD && !drain && c_rd && rd_room;     // a read issued: its tag, its credits
 
-// write beats the master offers and the packer takes this clock
+// the command ends this clock: a read on the port, or a write burst's last beat leaving
+wire  c_end = (as == A_RD && !DDRAM_BUSY) || (as == A_WR && w_out && !DDRAM_BUSY && b_left == 8'd1);
+wire  take = (as == A_IDLE || c_end) && pick_v && !drain;
+
+// a read accepted as it is chosen; write beats the master offers and the packer takes this clock
 logic w_take;
 always_comb begin
     m_waitn = '0;
     w_take = 1'b0;
-    if (as == A_RD && !DDRAM_BUSY) m_waitn[g] = 1'b1;
+    if (take && m_read[pick]) m_waitn[pick] = 1'b1;
     if (as == A_WR && m_write[g] && w_left != 0 && (!w_out || !DDRAM_BUSY)) begin m_waitn[g] = 1'b1; w_take = 1'b1; end
 end
-
-// the command ends this clock: a read accepted, or a write burst's last beat leaving
-wire  c_end = (as == A_RD && !DDRAM_BUSY) || (as == A_WR && w_out && !DDRAM_BUSY && b_left == 8'd1);
-wire  take = (as == A_IDLE || c_end) && pick_v && !drain;
 
 always_ff @(posedge clk) begin
     if (as == A_RD && !DDRAM_BUSY) DDRAM_RD <= 1'b0;
     if (w_out && !DDRAM_BUSY) begin DDRAM_WE <= 1'b0; w_out <= 1'b0; b_left <= b_left - 8'd1; end
     if (take) begin
         g <= pick;
-        if (pick != MW'(N - 1)) rr <= (pick == MW'(N - 2)) ? '0 : pick + 1'd1;
+        if (pick != MW'(N - 1) && (PRI < 0 || pick != MW'(PRI))) rr <= (pick == MW'(N - 2)) ? '0 : pick + 1'd1;
         c_rd <= m_read[pick]; c_addr <= m_addr[pick]; c_burst <= m_burst[pick];
     end
     case (as)

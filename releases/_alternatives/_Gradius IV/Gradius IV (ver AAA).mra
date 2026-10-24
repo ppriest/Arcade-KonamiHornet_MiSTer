@@ -71,7 +71,8 @@
         <cheat name="P2 Infinite Lives">00000000484900000000000009000000</cheat>
     </cheats>
 
-    <switches default="7B">
+    <!-- MAME's defaults (0x7B) but Monitor Type 15KHz -->
+    <switches default="7A">
         <dip name="Skip Post" bits="7" ids="On,Off"/>
         <dip name="Screen Flip (H)" bits="6" ids="On,Off"/>
         <dip name="Screen Flip (V)" bits="5" ids="On,Off"/>

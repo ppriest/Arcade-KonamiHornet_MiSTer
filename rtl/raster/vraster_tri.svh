@@ -198,11 +198,13 @@ endfunction
 //
 // Spans flow through the line-buffer sets in turn: the reader fills a set with the span's colour
 // and depth rows, the pixel pipeline runs the span through it, the writer writes the rows back
-// whole (pixels that fail keep what was read). Within a triangle the stages overlap; the triangle
-// ends when all its spans are written.
+// whole (pixels that fail keep what was read). Within a triangle the stages overlap. A triangle
+// ends for the command processor once its last span is handed to the reader (drain_pend while its
+// spans finish): the next one's register writes and setup go on meanwhile, and its first span
+// waits for the pipeline and the fill engine to be idle, so no two triangles' spans meet in it.
 
 typedef enum logic [3:0] {
-    T_IDLE, T_SORT, T_DIV, T_ROW0, T_LINE, T_CLIP, T_SPAN, T_EMIT, T_NEXT, T_DRAIN
+    T_IDLE, T_SORT, T_DIV, T_ROW0, T_LINE, T_CLIP, T_SPAN, T_NEXT, T_DRAIN
 } tstate_t;
 tstate_t ts;
 
@@ -251,7 +253,7 @@ logic        mv1, mv_q;
 always_ff @(posedge clk) begin
     ma_q <= mop_a; mb_q <= mop_b;
     mk1 <= {ts == T_ROW0, pk};
-    mv1 <= ts == T_ROW0 || ts == T_SPAN;
+    mv1 <= ts == T_ROW0 || (ts == T_SPAN && !span_hold);
     mprod_q <= 64'(ma_q * mb_q);
     mk_q <= mk1;
     mv_q <= mv1;
@@ -273,7 +275,18 @@ logic signed [31:0] sd_a;
 logic signed [63:0] sd_w, sd_s, sd_t;
 logic        sd_take;                                  // the reader takes it this clock
 
+// the span whose start parameters are being computed, emitted when its last product has landed
+// while the row loop goes on to the next row (whose products wait for the emit: span_hold)
+logic        e_v, e_last;                              // pending; the row's last part
+logic [9:0]  e_x0, e_x1, e_sy;
+wire         span_hold = ts == T_SPAN && pk == 2'd0 && e_v;
+wire         emit_now = e_v && !mv1 && !mv_q && (!sd_v || sd_take) && !drain_pend;
+// the pipeline's x-gradients, taken at each emit (the registers may hold the next triangle's)
+logic signed [31:0] px_dadx;
+logic signed [63:0] px_dwdx, px_dsdx, px_dtdx;
+
 logic        spans_idle;                               // no set busy, pipeline empty
+logic        fill_idle;                                // the texture fill engine idle
 
 always_ff @(posedge clk) begin
     tri_done <= 1'b0;
@@ -289,7 +302,21 @@ always_ff @(posedge clk) begin
         3'b010: sp_s <= r_s + mprod_q;
         default: sp_t <= r_t + mprod_q;
         endcase
-    if (reset) begin ts <= T_IDLE; sd_v <= 1'b0; end
+    if (drain_pend && spans_idle && fill_idle && !sd_v) drain_pend <= 1'b0;
+    if (emit_now) begin
+        logic [20:0] rb;
+        rb = 21'(e_sy * rowpix) << 1;
+        px_dadx <= dAdX; px_dwdx <= dWdX; px_dsdx <= dSdX; px_dtdx <= dTdX;
+        sd_v <= 1'b1;
+        sd_x0 <= e_x0; sd_x1 <= e_x1; sd_scry <= e_sy;
+        sd_crow <= rgboffs[fbzMode[15:14] == 2'd0 ? frontbuf : backbuf] + rb;
+        sd_zrow <= auxoffs + rb;
+        sd_a <= sp_a <<< 8; sd_w <= sp_w; sd_s <= sp_s; sd_t <= sp_t;
+        e_v <= 1'b0;
+        // the row's parameters step once its last span has its products
+        if (e_last) begin r_a <= r_a + dAdY; r_w <= r_w + dWdY; r_s <= r_s + dSdY; r_t <= r_t + dTdY; end
+    end
+    if (reset) begin ts <= T_IDLE; sd_v <= 1'b0; e_v <= 1'b0; drain_pend <= 1'b0; end
     else case (ts)
     T_IDLE: if (tri_go) begin
         logic signed [15:0] ax, ay, bx, by, cx, cy;
@@ -388,36 +415,33 @@ always_ff @(posedge clk) begin
         pk <= 2'd0;
         ts <= T_SPAN;
     end
-    T_SPAN: begin
+    T_SPAN: if (!span_hold) begin
         // the span start's parameters: the row's + (x0 - ax) * dpdx; an empty row leaves its
-        // first product unused
+        // first product unused. After the fourth the span is pending (e_*) and the loop goes on;
+        // a set holds 64 beats, so a longer span goes as its first 64 and the rest from T_SPAN again
         pk <= pk + 2'd1;
         if (pk == 2'd0 && (cx0 >= cx1 || row_skip)) ts <= T_NEXT;
-        else if (pk == 2'd3) ts <= T_EMIT;
-    end
-    T_EMIT: if ((!sd_v || sd_take) && !mv1 && !mv_q) begin
-        logic [20:0] rb;
-        logic [9:0]  xb;
-        rb = 21'(s_scry * rowpix) << 1;
-        // a set holds 64 beats: a longer span goes as its first 64, the rest from T_SPAN again
-        xb = {sx0[9:2] + 8'd64, 2'b00};
-        sd_v <= 1'b1;
-        sd_x0 <= sx0; sd_x1 <= (sx1 > xb) ? xb : sx1; sd_scry <= s_scry;
-        sd_crow <= rgboffs[fbzMode[15:14] == 2'd0 ? frontbuf : backbuf] + rb;
-        sd_zrow <= auxoffs + rb;
-        sd_a <= sp_a <<< 8; sd_w <= sp_w; sd_s <= sp_s; sd_t <= sp_t;
-        if (sx1 > xb) begin
-            sx0 <= xb; cx0 <= $signed({2'b0, xb}); pk <= 2'd0;
-            ts <= T_SPAN;
-        end else ts <= T_NEXT;
+        else if (pk == 2'd3) begin
+            logic [9:0] xb;
+            xb = {sx0[9:2] + 8'd64, 2'b00};
+            e_v <= 1'b1; e_x0 <= sx0; e_sy <= s_scry;
+            if (sx1 > xb) begin
+                e_x1 <= xb; e_last <= 1'b0;
+                sx0 <= xb; cx0 <= $signed({2'b0, xb});
+            end else begin
+                e_x1 <= sx1; e_last <= 1'b1;
+                ts <= T_NEXT;
+            end
+        end
     end
     T_NEXT: begin
+        // an emitted row's parameters step at its emit; an empty row's here
         y_cur <= y_cur + 12'sd1;
-        r_a <= r_a + dAdY; r_w <= r_w + dWdY; r_s <= r_s + dSdY; r_t <= r_t + dTdY;
+        if (!e_v) begin r_a <= r_a + dAdY; r_w <= r_w + dWdY; r_s <= r_s + dSdY; r_t <= r_t + dTdY; end
         x13 <= x13 + 44'(slope13); x12 <= x12 + 44'(slope12); x23 <= x23 + 44'(slope23);
         ts <= T_LINE;
     end
-    T_DRAIN: if (!sd_v && spans_idle) begin tri_done <= 1'b1; ts <= T_IDLE; end
+    T_DRAIN: if (!sd_v && !e_v) begin tri_done <= 1'b1; drain_pend <= 1'b1; ts <= T_IDLE; end
     default: ts <= T_IDLE;
     endcase
 end
@@ -425,7 +449,7 @@ end
 // ---------------------------------------------------------------- line-buffer sets
 
 // A set: a span's colour and depth rows, a beat (four pixels) an entry from the span's first beat.
-// Eight sets share four RAM pairs, set k in pair k[1:0]'s half k[2] of 64 entries (T_EMIT splits a
+// Eight sets share four RAM pairs, set k in pair k[1:0]'s half k[2] of 64 entries (T_SPAN splits a
 // longer span), so that short spans have twice the sets in flight. The halves share the RAMs'
 // ports, a clock at a time: on port A q18's pixel goes first and the reader's beat for that RAM
 // waits in hornet_ddr3 (readReady); on port B q16's read goes first and the writer reads again.
@@ -607,7 +631,7 @@ always_ff @(posedge clk) begin
             {p0_sy, p0_a, p0_w, p0_s, p0_t} <= par_q[233:0];
         end else if (px_run) begin
             p0_x <= p0_x + 10'd1;
-            p0_a <= p0_a + (dAdX <<< 8); p0_w <= p0_w + dWdX; p0_s <= p0_s + dSdX; p0_t <= p0_t + dTdX;
+            p0_a <= p0_a + (px_dadx <<< 8); p0_w <= p0_w + px_dwdx; p0_s <= p0_s + px_dsdx; p0_t <= p0_t + px_dtdx;
             if (p0_x + 10'd1 == s_x1[p0_set]) begin px_run <= 1'b0; px_set <= px_set + 3'd1; end
         end
     end
@@ -794,11 +818,16 @@ end
 // issued back to back and their data written as it comes, row after row, tile after tile: a 16-bit
 // tile-row is a beat, written in its clock; an 8-bit row's beat is two tile-rows, the low word
 // written as it comes and the high the clock after, with readReady low between (an odd row start
-// leaves a word to skip, an odd end one at the end). Then the run's tags a clock each (F2_TAG);
-// F2_WAIT lets the last reach the tag read
+// leaves a word to skip, an odd end one at the end). A tile's tag is written with its last row;
+// F2_WAIT lets the last tag reach the tag read.
+// Only a missing tile stalls the pipeline: pixels that hit go on while a fill runs. So that none
+// reads a slot being rewritten, a fill first clears the tags of its run, a tile a clock, and takes
+// no data (readReady) until it has. After a fill for a miss, while the triangle has spans to come,
+// the same run one tile row on (dTdY's sign) is fetched ahead: spans walk t a row at a time.
 localparam int TRUN = 8;
-typedef enum logic [2:0] { F2_IDLE, F2_REQ, F2_DATA, F2_TAG, F2_WAIT } fillst_t;
+typedef enum logic [2:0] { F2_IDLE, F2_REQ, F2_DATA, F2_WAIT } fillst_t;
 fillst_t     fls;
+assign       fill_idle = fls == F2_IDLE;
 logic [7:0]  cf_s, cf_t;                               // the run's first texel
 logic [3:0]  cf_kn;                                    // tiles in the run
 logic [1:0]  cf_rq;                                    // the next row to request
@@ -806,7 +835,12 @@ logic [1:0]  cf_r;                                     // the next data's row
 logic [2:0]  cf_k;                                     // ... its tile in the run (16-bit)
 logic [3:0]  cf_wi;                                    // ... its word in the row's burst (8-bit)
 logic [3:0]  cf_pad;                                   // an 8-bit row's burst starts a word early
-logic [2:0]  tg_k;                                     // the next tag written
+logic [3:0]  cf_iv;                                    // the run's tags cleared so far
+logic        cf_pf;                                    // the fill is a prefetch
+logic        pf_v;                                     // a prefetch waits: the run (cf_s, cf_kn) at row pf_t
+logic [7:0]  pf_t;
+logic        fb_on;                                    // a tile-row is written to the banks this clock
+logic [2:0]  fb_k;                                     // ... its tile in the run
 logic        h_v;                                      // an 8-bit beat's high word, written now
 logic [31:0] h_d;
 logic        tex_clear;                                // a texture memory write
@@ -816,13 +850,18 @@ wire         k_last = {1'b0, cf_k} == cf_kn - 4'd1;
 wire [3:0]   w_end = 4'((5'(cf_pad[cf_r]) + 5'(cf_kn) + 5'd1) & 5'h1E);
 wire         w_last = cf_wi + 4'd2 == w_end;
 wire         fill_last = t16 ? fill_dv && cf_r == 2'd3 && k_last : h_v && cf_r == 2'd3 && w_last;
-assign io_memTex_readReady = !(fill_dv && !t16);
+wire         iv_done = cf_iv == cf_kn;
+wire         iv_we = (fls == F2_REQ || fls == F2_DATA) && !iv_done && !tag_clr;
+assign io_memTex_readReady = iv_done && !(fill_dv && !t16);
 // tile k of the run's first texel
 function automatic logic [7:0] run_s(input logic [7:0] s, input logic [2:0] k);
     return s + {3'b0, k, 2'b00};
 endfunction
 
-assign stall = (miss != 4'h0) || fls != F2_IDLE;
+assign stall = miss != 4'h0;
+// s along the pipeline at the miss: the next pixel's (q10) against the missing one's
+wire [7:0]   s_step = tap_s(tc10, 0) - tap_s(tc11, 0);
+wire         s_falls = (m10.v && s_step != 8'h00) ? s_step[7] : px_dsdx[63];
 
 always_ff @(posedge clk) begin
     if (tag_clr) begin
@@ -832,6 +871,8 @@ always_ff @(posedge clk) begin
     if (reset || (tex_clear && !tag_clr)) begin tag_clr <= 1'b1; clr_i <= '0; end
     h_v <= fill_dv && !t16;
     if (fill_dv) h_d <= io_memTex_readDataHi;
+    if (iv_we) cf_iv <= cf_iv + 4'd1;
+    if (drain_pend || ts == T_DRAIN || ts == T_IDLE) pf_v <= 1'b0;
     if (fill_dv && t16) begin
         if (k_last) begin cf_k <= 3'd0; cf_r <= cf_r + 2'd1; end
         else cf_k <= cf_k + 3'd1;
@@ -847,14 +888,32 @@ always_ff @(posedge clk) begin
         logic [7:0] ms, mt;
         k = miss[0] ? 0 : miss[1] ? 1 : miss[2] ? 2 : 3;
         ms = tap_s(tc11, k); mt = tap_t(tc11, k);
-        cf_s <= {ms[7:2], 2'b00}; cf_t <= {mt[7:2], 2'b00};
-        // the run: TRUN tiles, or to the end of the texture's row (its width 1 << t_twb texels)
+        cf_t <= {mt[7:2], 2'b00};
+        // the run: a texture row of TRUN tiles or fewer whole (its width 1 << t_twb texels);
+        // otherwise TRUN tiles from the missing one, or to the row's end, or where s falls (the next
+        // pixel's s below the missing one's, or with no next pixel or the same s, dSdX < 0), TRUN
+        // tiles ending at it, or from the row's start
         begin
             logic [8:0] left;
             left = (9'd1 << t_twb) - {1'b0, ms[7:2], 2'b00};
-            cf_kn <= (left[8:2] >= 7'(TRUN)) ? 4'(TRUN) : left[5:2];
+            if (t_twb <= 4'($clog2(TRUN) + 2)) begin
+                cf_s <= 8'h00;
+                cf_kn <= (t_twb < 4'd2) ? 4'd1 : 4'((9'd1 << t_twb) >> 2);
+            end else if (s_falls) begin
+                cf_s <= (ms[7:2] >= 6'(TRUN - 1)) ? {ms[7:2] - 6'(TRUN - 1), 2'b00} : 8'h00;
+                cf_kn <= 4'(TRUN);
+            end else begin
+                cf_s <= {ms[7:2], 2'b00};
+                cf_kn <= (left[8:2] >= 7'(TRUN)) ? 4'(TRUN) : left[5:2];
+            end
         end
-        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0;
+        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0; cf_iv <= 4'd0;
+        cf_pf <= 1'b0; pf_v <= 1'b0;
+        fls <= F2_REQ;
+    end else if (pf_v && !drain_pend && ts != T_DRAIN && ts != T_IDLE) begin
+        cf_t <= pf_t;
+        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0; cf_iv <= 4'd0;
+        cf_pf <= 1'b1; pf_v <= 1'b0;
         fls <= F2_REQ;
     end
     F2_REQ: if (io_memTex_waitRequestn) begin
@@ -862,10 +921,12 @@ always_ff @(posedge clk) begin
         cf_rq <= cf_rq + 2'd1;
         if (cf_rq == 2'd3) fls <= F2_DATA;
     end
-    F2_DATA: if (fill_last) begin tg_k <= 3'd0; fls <= F2_TAG; end
-    F2_TAG: begin
-        tg_k <= tg_k + 3'd1;
-        if ({1'b0, tg_k} == cf_kn - 4'd1) fls <= F2_WAIT;
+    F2_DATA: if (fill_last) begin
+        fls <= F2_WAIT;
+        if (!cf_pf && !drain_pend && ts != T_DRAIN && ts != T_IDLE) begin
+            pf_v <= 1'b1;
+            pf_t <= dTdY[63] ? cf_t - 8'd4 : cf_t + 8'd4;
+        end
     end
     F2_WAIT: fls <= F2_IDLE;
     default: fls <= F2_IDLE;
@@ -876,11 +937,11 @@ always_ff @(posedge clk)
     if (fls == F2_REQ && t16 && tf_a[2]) $error("vraster: a 16-bit texture row at an odd word (%06X)", tf_a);
 `endif
 
-// the tag writes: the run's tiles after their data, or the clear's
+// the tag writes: the clear's, a fill's clearing of its run, or a tile's with its last row (row 3)
 always_comb begin
-    tg_we = tag_clr || fls == F2_TAG;
-    tg_wa = tag_clr ? clr_i : tile_slot(run_s(cf_s, tg_k), cf_t);
-    tg_wd = tag_clr ? 28'h0 : {1'b1, tile_tag(run_s(cf_s, tg_k), cf_t)};
+    tg_we = tag_clr || iv_we || (fb_on && cf_r == 2'd3);
+    tg_wa = tag_clr ? clr_i : tile_slot(run_s(cf_s, iv_we ? cf_iv[2:0] : fb_k), cf_t);
+    tg_wd = (tag_clr || iv_we) ? 28'h0 : {1'b1, tile_tag(run_s(cf_s, fb_k), cf_t)};
 end
 
 // the fill's bank writes into banks (row parity, column parity), an entry (two texels) a bank: a
@@ -910,6 +971,7 @@ always_comb begin
             tb_we[{cf_r[0], 1'(c)}] = 1'b1;
             tb_wa[{cf_r[0], 1'(c)}] = {tile_slot(run_s(cf_s, k), cf_t), cf_r[1]};
         end
+    fb_on = on; fb_k = k;
 end
 
 always_ff @(posedge clk) begin

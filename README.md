@@ -31,6 +31,14 @@ drawn, with sound from the MiSTer's ARM. Doesn't run full-speed on many levels
 
 ## History
 
+`Arcade-KonamiHornet_20261025.rbf`
+* **Alpha**.
+* The 15 kHz mode works, and is the default (Monitor Type DIP): 512×192, for 15 kHz CRTs. 24 kHz
+  (512×384) looks much better on a monitor that takes it or on HDMI (see Installation).
+* Faster Voodoo: texture fills follow the texture's direction and fetch the next tile row ahead, and
+  each triangle's setup overlaps the last one's drawing. Slowdown is reduced, more so at 15 kHz.
+* Button names corrected: Power Up, Shot, Missile.
+
 `Arcade-KonamiHornet_20261024.rbf`
 * **Alpha**.
 * Gradius IV runs, but the Voodoo is too slow on many levels and the game will slow to 1/2 speed or worse. An optional indicator will display a yellow square at the top right when slowed.
@@ -80,11 +88,19 @@ Sets with an `.mra` in `releases/` (clones in `releases/_alternatives/_Gradius I
 
 ### Video timing
 
-16 MHz dot clock (64 MHz / 4), 640 dots per line (25 kHz) and 428 lines per frame (58.41 Hz). The
-visible area is 512×384. MAME's `set_raw()` declares 644 dots per line (24.84 kHz, 58.05 Hz) and
-doubts its own input clock; at run time MAME picks the line rate from the Voodoo's registers and
-lands on 25 kHz for Gradius IV. The sync pulses are placed by the core, not from the Voodoo's
-registers (`docs/HACKS.md`). There is no PCB measurement.
+The Monitor Type DIP picks the mode, and the game programs the Voodoo for it.
+
+| Monitor Type | Dot clock | Dots per line | Lines | Frame rate | Visible |
+|---|---|---|---|---|---|
+| 24KHz | 16 MHz (64 / 4) | 640 (25 kHz) | 428 | 58.41 Hz | 512×384 |
+| 15KHz (default) | 12.8 MHz (64 / 5) | 813 (15.74 kHz) | 262 | 60.09 Hz | 512×192 |
+
+At 15 kHz the game draws the whole scene at half height, so the Voodoo fills half the pixels and
+the picture has half the vertical detail. In `sim/board_tb` the lava (frame 44400) gets a new picture
+every frame at 15 kHz and every second frame at 24 kHz.
+MAME's `set_raw()` declares 644 dots per line (24.84 kHz, 58.05 Hz) and doubts its own input clock;
+at run time MAME picks 15.75 or 25 kHz from the Voodoo's registers, and the core does the same. Sync
+comes from the Voodoo's hSync and vSync registers (`docs/HACKS.md`). There is no PCB measurement.
 
 ### Floorplan
 
@@ -128,6 +144,10 @@ A 128 MB SDRAM module is required (the core uses 28 MB of it).
   the steps). It waits in the background and plays whenever a Hornet (or Hyper NeoGeo 64) set is
   loaded
 
+The core defaults to the game's 15 kHz mode (512×192), so that it runs on a 15 kHz CRT. It looks
+much better at 24 kHz (512×384), on a monitor that takes it or on HDMI: set Monitor Type to 24KHz on
+the OSD's DIP page and reset the core (the game reads the switch at power-on).
+
 To run a development build instead: `python scripts/build_staged.py`, then `python scripts/deploy.py`
 with a `mister.env` (see `scripts/deploy.py`).
 
@@ -136,9 +156,9 @@ with a `mister.env` (see `scripts/deploy.py`).
 | Input | Gradius IV | Default pad button |
 |-|-|-|
 | Joystick | move | d-pad |
-| Button 1 | Shot | A |
-| Button 2 | Missile | B |
-| Button 3 | Power Up | X |
+| Button 1 | Power Up | A |
+| Button 2 | Shot | B |
+| Button 3 | Missile | X |
 | Start | Start | Start |
 | Coin | Coin | Select |
 | Service | Service (player 2's: Service 2) | R |
@@ -154,7 +174,7 @@ MAME's default keys, alongside the pads (the OSD must be closed):
 | Input | Player 1 | Player 2 |
 |-|-|-|
 | Joystick | arrows | R F D G |
-| Shot, Missile, Power Up | Left Ctrl, Left Alt, Space | A, S, Q |
+| Power Up, Shot, Missile | Left Ctrl, Left Alt, Space | A, S, Q |
 | Start | 1 | 2 |
 | Coin | 5 | 6 |
 | Service | 9 | 0 |
@@ -166,9 +186,9 @@ MAME's default keys, alongside the pads (the OSD must be closed):
 Known issues:
 
 - **Walking robots in stage 4's rocky section walk in the air** instead of falling to the ground.
-- **In-game sections slow down**, to half rate at times. Probes on the board point at three
-  limits in different scenes: the PPC's memory port (no data cache), the SHARC's geometry, and the
-  Voodoo's texture fills on full-screen layers.
+- **In-game sections slow down**, to half rate at times, less at 15 kHz than at 24 kHz. Probes on
+  the board point at three limits in different scenes: the PPC's memory port (no data cache), the
+  SHARC's geometry, and the Voodoo's texture fills on full-screen layers.
 - **The first boot stops at "RTC CHECKSUM ERROR! ... PRESS TEST SWITCH TO CONTINUE"**, as MAME's does with the set's NVRAM image: press Test (L). The settings are then saved to the `.nvm` file.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be
@@ -207,14 +227,15 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Resource usage
 
-The release revision `KonamiHornet` at `bde515a` (fitter seed 4) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.068 ns, the SHARC's clk_dsp;
-clk_sys +0.744) and missed on the HDMI scaler's by 0.758 ns. At this utilisation the fitter
-crashed on seed 3 (`docs/LESSONS_LEARNED.md`).
+The release revision `KonamiHornet` at `e10d368` (fitter seed 9) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.449 ns, the SHARC's clk_dsp;
+clk_sys +0.631) and missed on the HDMI scaler's (`sys/` ascal) by 0.590 ns, as on seeds 4 to 8 of
+this design. At this utilisation the fitter crashed on seed 3 of an earlier commit
+(`docs/LESSONS_LEARNED.md`).
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 41,660 | 41,910 |
+| Logic (ALMs) | 41,646 | 41,910 |
 | Block memory bits | 4,407,017 | 5,662,720 |
 | RAM blocks | 553 | 553 |
 | DSP blocks | 96 | 112 |

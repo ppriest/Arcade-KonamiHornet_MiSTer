@@ -3,8 +3,9 @@
 // Hornet's picture: the Voodoo's displayed buffer through its CLUT, with the K037122's
 // rotate/zoom tilemap over it (hornet.cpp screen_update: voodoo update, then k037122 tile_draw).
 //
-// Screen: 644 pixels a line at clk/4; 512 x 384 visible from the Voodoo's back porch (xoffs,
-// yoffs), as MAME's recompute_video_timing sets its screen (voodoo.cpp:2749-2750).
+// Screen: the board's line of pixels (hpix, a pixel every 4 or 5 clocks); 512 x v_height visible
+// from the Voodoo's back porch (xoffs, yoffs), as MAME's recompute_video_timing sets its screen
+// (voodoo.cpp:2749-2750).
 // Each visible line is built while the line before it is shown, into one of two line buffers:
 //   Voodoo   the displayed buffer's row (line - yoffs): one 256-word burst on port S, a word
 //            (two pixels) into the line buffer as each comes back.
@@ -28,6 +29,8 @@ module hornet_video (
 
     input  logic        run,            // the raster is running (lclk counts)
     input  logic [15:0] lclk,           // clock within the line (the board's line counter)
+    input  logic [9:0]  hpix,           // pixel within the line, and clock within the pixel
+    input  logic [2:0]  pph,
     input  logic [9:0]  vpos,
     input  logic [11:0] vtotal,
 
@@ -58,23 +61,26 @@ module hornet_video (
     input  logic [15:0] v_stride,       // pixels per row
     input  logic [9:0]  v_xoffs,        // backPorch.horizontal + 2 (voodoo.cpp:2418)
     input  logic [9:0]  v_yoffs,        // backPorch.vertical
+    input  logic [9:0]  v_height,       // videoDimensions.yheight
+    input  logic [9:0]  hs_start,       // first pixel of the hsync pulse, which ends the line
+    input  logic [11:0] vs_start,       // first line of vsync, which runs to the frame's end
 
     // CLUT entry writes (clutData, or a state load): index 0-32, 0x00RRGGBB
     input  logic        clut_we,
     input  logic [5:0]  clut_idx,
     input  logic [23:0] clut_data,
 
-    output logic        vid_ce,         // pixel clock enable (clk/4)
+    output logic        vid_ce,         // pixel clock enable
     output logic        vid_de,
     output logic [9:0]  vid_x,
     output logic [9:0]  vid_y,
     output logic [7:0]  vid_r, vid_g, vid_b,
-    output logic        vid_hb, vid_vb, // blanking: outside the 512 x 384 window
-    output logic        vid_hs, vid_vs, // sync: placed after the window (HACKS.md)
+    output logic        vid_hb, vid_vb, // blanking: outside the visible window
+    output logic        vid_hs, vid_vs,
     output logic        overrun         // pulse: the line being built was not finished in time
 );
 
-localparam int VIS_W = 512, VIS_H = 384;
+localparam int VIS_W = 512;
 
 // ------------------------------------------------------------------------------------------
 // CLUT and its per-channel tables
@@ -160,7 +166,7 @@ logic [16:0] kb_q;
 
 wire        line_start = run && lclk == 16'd0;
 wire [9:0]  next_line = ({2'b0, vpos} + 12'd1 >= vtotal) ? 10'd0 : vpos + 10'd1;
-wire        next_vis = next_line >= v_yoffs && next_line < v_yoffs + 10'(VIS_H);
+wire        next_vis = next_line >= v_yoffs && next_line < v_yoffs + v_height;
 logic [9:0] b_line;                     // the K037122 line being built
 logic [1:0] b_bank;
 logic [9:0] bl;                         // the next K037122 line to take
@@ -169,8 +175,8 @@ logic [9:0] bl;                         // the next K037122 line to take
 wire [11:0] bl_d = ({2'b0, bl} >= {2'b0, vpos}) ? {2'b0, bl} - {2'b0, vpos} : {2'b0, bl} + vtotal - {2'b0, vpos};
 wire        bl_ahead = bl_d >= 12'd1 && bl_d <= 12'd3;
 wire        bl_late = bl_d == 12'd0 || bl_d + 12'd16 > vtotal;
-wire        bl_vis = bl >= v_yoffs && bl < v_yoffs + 10'(VIS_H);
-wire        vpos_vis = vpos >= v_yoffs && vpos < v_yoffs + 10'(VIS_H);
+wire        bl_vis = bl >= v_yoffs && bl < v_yoffs + v_height;
+wire        vpos_vis = vpos >= v_yoffs && vpos < v_yoffs + v_height;
 
 // K037122 frame parameters (k037122.cpp tile_draw)
 wire        map128 = k_ctl[16];
@@ -337,8 +343,8 @@ end
 // Output
 // ------------------------------------------------------------------------------------------
 
-wire [9:0] hpos = lclk[11:2];
-wire       vis  = hpos >= v_xoffs && hpos < v_xoffs + 10'(VIS_W) && vpos >= v_yoffs && vpos < v_yoffs + 10'(VIS_H);
+wire [9:0] hpos = hpix;
+wire       vis  = hpos >= v_xoffs && hpos < v_xoffs + 10'(VIS_W) && vpos >= v_yoffs && vpos < v_yoffs + v_height;
 wire [8:0] ox   = 9'(hpos - v_xoffs);
 
 logic [23:0] kb_q24;
@@ -353,13 +359,13 @@ hornet_dpram #(.AW(11), .DW(24)) u_kbuf (.clk,
 assign kb_q = kb_q24[16:0];
 
 always_ff @(posedge clk) begin
-    vid_ce <= lclk[1:0] == 2'd1;
-    if (lclk[1:0] == 2'd1) begin
+    vid_ce <= pph == 3'd1;
+    if (pph == 3'd1) begin
         vid_de <= vis;
         vid_hb <= !(hpos >= v_xoffs && hpos < v_xoffs + 10'(VIS_W));
-        vid_vb <= !(vpos >= v_yoffs && vpos < v_yoffs + 10'(VIS_H));
-        vid_hs <= hpos >= v_xoffs + 10'(VIS_W + 16) && hpos < v_xoffs + 10'(VIS_W + 64);
-        vid_vs <= vpos >= v_yoffs + 10'(VIS_H + 3) && vpos < v_yoffs + 10'(VIS_H + 6);
+        vid_vb <= !(vpos >= v_yoffs && vpos < v_yoffs + v_height);
+        vid_hs <= hpos >= hs_start;
+        vid_vs <= {2'b0, vpos} >= vs_start;
         vid_x <= {1'b0, ox};
         vid_y <= vpos - v_yoffs;
         if (kb_q[16]) begin

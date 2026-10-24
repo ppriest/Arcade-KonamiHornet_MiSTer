@@ -35,10 +35,9 @@
 
 double sc_time_stamp() { return 0; }
 
-static const int FRAME_LINE = 411;        // MAME's frame end: the line after the visible area
-// 64 MHz / 25 kHz: the Voodoo's medium-resolution line rate MAME picks (58.41 Hz at 428 lines).
-// +line=N models another clk_sys at that line rate (1920: 48 MHz); the PPC timebase stays clk/2.
-static int LINE_CLOCKS = 2560;
+// MAME's frame end, the line after the visible area, and the picture's height: from the snapshot's
+// Voodoo (backPorch.vertical + videoDimensions.y; 411 and 384 at 24 kHz, 222 and 192 at 15 kHz)
+static int FRAME_LINE = 411, VIS_H = 384;
 
 // ------------------------------------------------------------------------------------------
 // files
@@ -276,7 +275,6 @@ int main(int argc, char **argv) {
     const char *s;
     std::string snap = (s = Verilated::commandArgsPlusMatch("snap=")) && *s ? std::string(s + 6) : "";
     int frames = (s = Verilated::commandArgsPlusMatch("frames=")) && *s ? atoi(s + 8) : 4;
-    if ((s = Verilated::commandArgsPlusMatch("line=")) && *s) LINE_CLOCKS = atoi(s + 6);
     if ((s = Verilated::commandArgsPlusMatch("memlat=")) && *s) g_memlat = atoi(s + 8);
     if ((s = Verilated::commandArgsPlusMatch("memq=")) && *s) g_memq = atoi(s + 6);
     if ((s = Verilated::commandArgsPlusMatch("wwait=")) && *s) g_wwait = atoi(s + 7);
@@ -295,9 +293,10 @@ int main(int argc, char **argv) {
     bool ccache = Verilated::commandArgsPlusMatch("ccache")[0];
     bool ddr3 = Verilated::commandArgsPlusMatch("ddr3")[0];
     Ddr ddr;
-    unsigned long long dd[14] = {0}, dc[8] = {0};
+    unsigned long long dd[15] = {0}, dc[8] = {0};
     bool tf_q = false;
-    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_hs[4] = {};
+    uint64_t tx_seq[7] = {}, tx_gap[5] = {};
+    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_hs[4] = {}, vp_fl[5] = {};
     if ((s = Verilated::commandArgsPlusMatch("ddrlat=")) && *s) ddr.lat = atoi(s + 8);
     if ((s = Verilated::commandArgsPlusMatch("ddrbusy=")) && *s) ddr.busy_pct = atoi(s + 9);
     // +ringoff: vraster's memory FIFO without its DDR3 ring (the stp revision's debug switch)
@@ -393,6 +392,14 @@ int main(int argc, char **argv) {
     auto k33       = load_items(st + "k033906_1.txt");
     auto k56       = load_items(st + "k056800.txt");
     auto vitems    = load_items(st + "voodoo0.txt");
+    VIS_H = (int)need(vitems, "m_height");
+    FRAME_LINE = (int)need(vitems, "m_yoffs") + VIS_H;
+    // vraster starts showing buffer 0: with MAME's front buffer 1, the two colour buffers are
+    // exchanged (the game draws to whichever is the back buffer)
+    if (need(vitems, "m_frontbuf") == 1) {
+        uint32_t o0 = need(vitems, "m_rgboffs", 0), o1 = need(vitems, "m_rgboffs", 1);
+        std::swap_ranges(fbmem.begin() + o0, fbmem.begin() + o1, fbmem.begin() + o1);
+    }
     auto fbi       = load_le32(st + "voodoo0/0_m_reg_m_regs.bin", 256);
     auto tmu0      = load_le32(st + "voodoo0/0_m_tmu_0__m_reg_m_regs.bin", 256);
     std::map<std::string, uint32_t> ports;
@@ -437,7 +444,6 @@ int main(int argc, char **argv) {
 
     t->in0 = ports[":IN0"]; t->in1 = ports[":IN1"]; t->in2 = ports[":IN2"]; t->in3 = 0xF0;      // MAME reads 0xF0: JVS sense high (no JVS device), EEPDO 0
     t->dsw = ports[":DSW"];
-    t->line_clocks = LINE_CLOCKS;
     t->run = 0; t->ld_we = 0; t->ld_v_we = 0;
     t->v_ring_off = ringoff;
     t->ddr3_en = ddr3;
@@ -467,10 +473,10 @@ int main(int argc, char **argv) {
     t->ppc_dbg_we = 0; t->dsp_dbg_we = 0; t->dsp_dbg_pm_we = 0; t->dsp_dbg_dm_we = 0;
 
     // the SHARC's clock: with clk until dsp_dual (the state load), then +dspmhz=N MHz against clk's
-    // LINE_CLOCKS * 25 kHz, its edges placed in time between clk's
+    // 64 MHz, its edges placed in time between clk's
     double dsp_mhz = (s = Verilated::commandArgsPlusMatch("dspmhz=")) && *s ? atof(s + 8) : 0.0;
     bool dsp_dual = false;
-    const double clk_ps = 1e12 / (LINE_CLOCKS * 25000.0);
+    const double clk_ps = 1e12 / 64e6;
     double t_ps = 0.0, dsp_next = 0.0;
     int dsp_lvl = 0;
     uint64_t dsp_x = 0;                 // with dsp_dual: the SHARC's instructions
@@ -644,7 +650,7 @@ int main(int argc, char **argv) {
                 dsp_lvl ^= 1; t->clk_dsp = dsp_lvl; dsp_next += half;
             }
         }
-        if (t->vid_ce && t->vid_de && t->vid_x < 512 && t->vid_y < 384) {
+        if (t->vid_ce && t->vid_de && t->vid_x < 512 && t->vid_y < VIS_H) {
             uint8_t *q = &screen[3 * (t->vid_y * 512 + t->vid_x)];
             q[0] = t->vid_r; q[1] = t->vid_g; q[2] = t->vid_b;
         }
@@ -842,7 +848,7 @@ int main(int argc, char **argv) {
     if ((s = Verilated::commandArgsPlusMatch("pause=")) && *s) sscanf(s + 7, "%d,%d", &pause_f, &pause_n);
     bool fail = false;
     uint32_t ppc_pc_now = 0;
-    uint64_t limit = (uint64_t)(frames + 1) * 428 * LINE_CLOCKS;
+    uint64_t limit = (uint64_t)(frames + 1) * 428 * 2560;     // a 24 kHz frame, the longer
     if (dsp_mhz > 0) { dsp_dual = true; dsp_next = t_ps + 1e6 / dsp_mhz / 2.0; dsp_lvl = 1; }
     while (frame < frames && cyc - run0 < limit && !Verilated::gotFinish()) {
         clock();
@@ -905,6 +911,14 @@ int main(int argc, char **argv) {
             }
         }
         if (t->ev_dsp_reset) fprintf(stderr, "frame %d line %d: the SHARC boots\n", frame + 1, (int)t->vpos);
+        {   // the Voodoo's vSync (lines a frame) as the game sets it
+            static uint32_t vs_q = ~0u;
+            uint32_t vs = (t->rootp->tb_board__DOT__dut__DOT__vsync_off << 16) | t->rootp->tb_board__DOT__dut__DOT__vsync_on;
+            if (vs != vs_q) {
+                fprintf(stderr, "clock %llu: vSync off %u on %u\n", (unsigned long long)(cyc - run0), vs >> 16, vs & 0xFFFF);
+                vs_q = vs;
+            }
+        }
         if (Verilated::commandArgsPlusMatch("swaplog")[0]) {
             static int prev_disp = -1, prev_idle = -1;
             if (t->ev_swapcmd) fprintf(stderr, "frame %d line %d: swapbufferCMD\n", frame + 1, (int)t->vpos);
@@ -1008,9 +1022,9 @@ int main(int argc, char **argv) {
             if (g & 0x20) dd[7]++;                             // write beats
             if (g & 0x40) dd[8]++;                             // beats in
             if (g & (1u << 23)) { dd[9] += (g >> 12) & 0x7FF; dd[10]++; }
-            // vraster: clocks a texture fill holds the pipeline, fills, clocks drawing triangles
+            // vraster: clocks a missing texel holds the pipeline, fills, clocks drawing triangles
+            if (t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__miss) dd[11]++;
             if (t->v_dbg & 0x20) {
-                dd[11]++;
                 if (!tf_q) {
                     dd[12]++;
                     // +texstat: fills by texture format, and by 16-bit or 8-bit texels the clocks they hold
@@ -1019,7 +1033,54 @@ int main(int argc, char **argv) {
                 tx_hold[(t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__textureMode >> 11) & 1]++;
             }
             tf_q = t->v_dbg & 0x20;
+            // ... and each fill against the one before it (same texture): the next run along s, an
+            // earlier run in the same tile row, the tile row below or above, another; runs cut short
+            // by the row's end; and the clocks the pipeline ran between fills
+            {
+                auto *r = t->rootp;
+                static unsigned fls_q = 0, ps = 0, pt = 0, pk = 0, pb = ~0u; static uint64_t f_end = 0;
+                unsigned fl = r->tb_board__DOT__dut__DOT__voodoo__DOT__fls & 7;
+                if (fls_q == 0 && fl == 1) {
+                    unsigned cs_ = r->tb_board__DOT__dut__DOT__voodoo__DOT__cf_s, ct = r->tb_board__DOT__dut__DOT__voodoo__DOT__cf_t,
+                             kn = r->tb_board__DOT__dut__DOT__voodoo__DOT__cf_kn,
+                             tb = r->tb_board__DOT__dut__DOT__voodoo__DOT__texBaseAddr ^ (r->tb_board__DOT__dut__DOT__voodoo__DOT__tLOD << 8);
+                    int c = 4;
+                    if (tb == pb) {
+                        if (ct == pt && cs_ == ((ps + 4 * pk) & 255)) c = 0;
+                        else if (ct == pt && cs_ == ((ps - 4) & 255)) c = 1;
+                        else if (ct == pt) c = 6;
+                        else if (ct == ((pt + 4) & 255)) c = 2;
+                        else if (ct == ((pt - 4) & 255)) c = 3;
+                    }
+                    tx_seq[c]++;
+                    // +filldump=N: the first N fills, with the pixel that missed
+                    static int fd_n = Verilated::commandArgsPlusMatch("filldump=")[0]
+                                          ? atoi(Verilated::commandArgsPlusMatch("filldump=") + 10) : 0;
+                    if (fd_n > 0) {
+                        fd_n--;
+                        uint64_t m = r->tb_board__DOT__dut__DOT__voodoo__DOT__m11;
+                        fprintf(stderr, "fill at x %3u y %3u: s %3u t %3u tiles %u, tex %08X dSdX %c\n",
+                                (unsigned)((m >> 34) & 0x3FF), (unsigned)((m >> 24) & 0x3FF), cs_, ct, kn, tb,
+                                (r->tb_board__DOT__dut__DOT__voodoo__DOT__dSdX >> 63) ? '-' : '+');
+                    }
+                    if (kn < 8) tx_seq[5]++;
+                    uint64_t gap = cyc - f_end;
+                    tx_gap[gap < 16 ? 0 : gap < 32 ? 1 : gap < 64 ? 2 : gap < 128 ? 3 : 4]++;
+                    ps = cs_; pt = ct; pk = kn; pb = tb;
+                }
+                if (fls_q != 0 && fl == 0) f_end = cyc;
+                fls_q = fl;
+            }
             if (((t->v_dbg >> 10) & 15) == 8) dd[13]++;
+            // ... and busy: commands queued or under way, spans in flight, or a fill running
+            {
+                auto *r = t->rootp;
+                bool sets = false;
+                for (int k = 0; k < 8; k++) if (r->tb_board__DOT__dut__DOT__voodoo__DOT__st[k] & 7) sets = true;
+                if (((t->v_dbg >> 10) & 15) != 0 || !r->tb_board__DOT__dut__DOT__voodoo__DOT__f_empty || sets ||
+                    r->tb_board__DOT__dut__DOT__voodoo__DOT__px_run || (r->tb_board__DOT__dut__DOT__voodoo__DOT__fls & 7))
+                    dd[14]++;
+            }
             // +vprof: clocks by command state, by triangle state while drawing, and triangles
             vp_cs[(t->v_dbg >> 10) & 15]++;
             if (((t->v_dbg >> 10) & 15) == 8) vp_ts[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__ts & 15]++;
@@ -1029,7 +1090,7 @@ int main(int argc, char **argv) {
             if (((t->v_dbg >> 10) & 15) == 8) {
                 auto *r = t->rootp;
                 unsigned ps = r->tb_board__DOT__dut__DOT__voodoo__DOT__px_set & 7;
-                if (r->tb_board__DOT__dut__DOT__voodoo__DOT__stall) vp_px[1]++;
+                if (r->tb_board__DOT__dut__DOT__voodoo__DOT__miss) vp_px[1]++;
                 else if (r->tb_board__DOT__dut__DOT__voodoo__DOT__px_run) vp_px[0]++;
                 else if ((r->tb_board__DOT__dut__DOT__voodoo__DOT__st[ps] & 7) != 2) vp_px[2]++;
                 else if (!r->tb_board__DOT__dut__DOT__voodoo__DOT__px_start) vp_px[3]++;
@@ -1041,6 +1102,15 @@ int main(int argc, char **argv) {
                 if (rd & wn & 16) vp_hs[1]++;
                 if (rv & 8) vp_hs[2]++;
                 if (rv & 16) vp_hs[3]++;
+            }
+            // ... the texture fill's clocks by state (requests, data, tags, wait) and its first data
+            {
+                unsigned f = t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__fls & 7;
+                if (f >= 1 && f <= 4) vp_fl[f - 1]++;
+                static unsigned f_q = 0; static bool got = false;
+                if (f == 1 && f_q != 1) got = false;
+                if ((f == 1 || f == 2) && !got) { vp_fl[4]++; if (t->rootp->tb_board__DOT__dm_rvalid & 32) got = true; }
+                f_q = f;
             }
             // ... line-buffer set-clocks by state (free, read, ready, proc, done, write)
             for (int k = 0; k < 8; k++) vp_st[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__st[k] & 7]++;
@@ -1066,8 +1136,8 @@ int main(int argc, char **argv) {
                 // picture written every 20 frames
                 if (frame % (Verilated::commandArgsPlusMatch("everyshot")[0] ? 1 : 20) == 0) {
                     FILE *fr = fopen((snap + "/rtl_screen_f" + std::to_string(frame) + ".ppm").c_str(), "wb");
-                    fprintf(fr, "P6\n512 384\n255\n");
-                    fwrite(screen.data(), 1, screen.size(), fr);
+                    fprintf(fr, "P6\n512 %d\n255\n", VIS_H);
+                    fwrite(screen.data(), 1, 512 * VIS_H * 3, fr);
                     fclose(fr);
                 }
                 fprintf(stderr, "frame %d at %llu clocks: PPC %llu, SHARC %llu instructions, PPC at %08X (past MAME's frames)\n",
@@ -1082,30 +1152,30 @@ int main(int argc, char **argv) {
             // CoreHornet's buffer0Base is the displayed buffer's offset (swaps already applied)
             uint32_t roffs = t->v_base0;
             long diff = 0;
-            for (int y = 0; y < 384; y++)
+            for (int y = 0; y < VIS_H; y++)
                 for (int x = 0; x < 512; x++) {
                     uint32_t o = 2 * (y * 512 + x);
                     if (roffs + o + 1 >= fbmem.size()) { diff++; continue; }
                     if (fbmem[roffs + o] != mfb[moffs + o] || fbmem[roffs + o + 1] != mfb[moffs + o + 1]) diff++;
                 }
-            ppm(snap + "/rtl_f" + std::to_string(frame) + ".ppm", fbmem.data(), roffs, 512, 384, 512);
-            ppm(snap + "/mame_f" + std::to_string(frame) + ".ppm", mfb.data(), moffs, 512, 384, 512);
+            ppm(snap + "/rtl_f" + std::to_string(frame) + ".ppm", fbmem.data(), roffs, 512, VIS_H, 512);
+            ppm(snap + "/mame_f" + std::to_string(frame) + ".ppm", mfb.data(), moffs, 512, VIS_H, 512);
             // MAME's f<n>/screen.bin is the picture shown during frame n - 1
             std::string fs = snap + "/f" + std::to_string(frame + 1) + "/screen.bin";
             if (FILE *fe = fopen(fs.c_str(), "rb")) {
                 fclose(fe);
-                auto ms = load_bytes(fs, 512 * 384 * 4);   // ARGB32, little-endian
+                auto ms = load_bytes(fs, 512 * VIS_H * 4);   // ARGB32, little-endian
                 long sd = 0;
                 FILE *fr = fopen((snap + "/rtl_screen_f" + std::to_string(frame) + ".ppm").c_str(), "wb");
                 FILE *fm = fopen((snap + "/mame_screen_f" + std::to_string(frame) + ".ppm").c_str(), "wb");
-                fprintf(fr, "P6\n512 384\n255\n"); fprintf(fm, "P6\n512 384\n255\n");
-                for (int i = 0; i < 512 * 384; i++) {
+                fprintf(fr, "P6\n512 %d\n255\n", VIS_H); fprintf(fm, "P6\n512 %d\n255\n", VIS_H);
+                for (int i = 0; i < 512 * VIS_H; i++) {
                     uint8_t m3[3] = {ms[4 * i + 2], ms[4 * i + 1], ms[4 * i]};
                     if (memcmp(m3, &screen[3 * i], 3)) sd++;
                     fwrite(&screen[3 * i], 1, 3, fr); fwrite(m3, 1, 3, fm);
                 }
                 fclose(fr); fclose(fm);
-                fprintf(stderr, "frame %d picture: %ld of 196608 pixels differ\n", frame, sd);
+                fprintf(stderr, "frame %d picture: %ld of %d pixels differ\n", frame, sd, 512 * VIS_H);
             }
             if (Verilated::commandArgsPlusMatch("dspdump=")[0] && frame == atoi(Verilated::commandArgsPlusMatch("dspdump=") + 9)) {
                 // the SHARC's registers (sim/sharc_tb numbering): R0-15 I0-15 M0-15 ASTAT MODE1
@@ -1142,17 +1212,25 @@ int main(int argc, char **argv) {
                         "fbcr %llu fbar %llu tex %llu ring %llu S %llu\n", frame,
                         dd[0], dd[1], dd[2], dd[3], dd[4], dd[5], dd[6], dd[10] ? (double)dd[9] / dd[10] : 0.0, dd[7], dd[8],
                         dc[0], dc[1], dc[2], dc[3], dc[4], dc[5], dc[6], dc[7]);
-                fprintf(stderr, "frame %d Voodoo: drawing %llu clocks, texture fills %llu holding the pipeline %llu clocks\n",
-                        frame, dd[13], dd[12], dd[11]);
+                fprintf(stderr, "frame %d Voodoo: busy %llu clocks, drawing %llu, texture fills %llu holding the pipeline %llu clocks\n",
+                        frame, dd[14], dd[13], dd[12], dd[11]);
                 if (Verilated::commandArgsPlusMatch("texstat")[0]) {
                     fprintf(stderr, "frame %d texture fills by format:", frame);
                     for (int k = 0; k < 16; k++) if (tx_fmt[k]) fprintf(stderr, " %d:%llu", k, (unsigned long long)tx_fmt[k]);
                     fprintf(stderr, "; holding 8-bit %llu, 16-bit %llu clocks\n", (unsigned long long)tx_hold[0],
                             (unsigned long long)tx_hold[1]);
+                    fprintf(stderr, "frame %d texture fills after the last: next run %llu, the tile before %llu, row below %llu, "
+                            "row above %llu, other %llu; short runs %llu; same row elsewhere %llu; pipeline running between fills <16 %llu, "
+                            "<32 %llu, <64 %llu, <128 %llu, more %llu\n", frame,
+                            (unsigned long long)tx_seq[0], (unsigned long long)tx_seq[1], (unsigned long long)tx_seq[2],
+                            (unsigned long long)tx_seq[3], (unsigned long long)tx_seq[4], (unsigned long long)tx_seq[5], (unsigned long long)tx_seq[6],
+                            (unsigned long long)tx_gap[0], (unsigned long long)tx_gap[1], (unsigned long long)tx_gap[2],
+                            (unsigned long long)tx_gap[3], (unsigned long long)tx_gap[4]);
+                    memset(tx_seq, 0, sizeof tx_seq); memset(tx_gap, 0, sizeof tx_gap);
                 }
                 if (Verilated::commandArgsPlusMatch("vprof")[0]) {
                     static const char *cn[10] = {"idle", "load", "conv", "exec", "adj", "adj2", "fill", "swap", "tri", "texw"};
-                    static const char *tn[10] = {"idle", "sort", "div", "row0", "line", "clip", "span", "emit", "next", "drain"};
+                    static const char *tn[10] = {"idle", "sort", "div", "row0", "line", "clip", "span", "next", "drain", "-"};
                     fprintf(stderr, "frame %d Voodoo commands:", frame);
                     for (int k = 0; k < 10; k++) fprintf(stderr, " %s %llu", cn[k], (unsigned long long)vp_cs[k]);
                     fprintf(stderr, "; %llu triangles:", (unsigned long long)vp_tris);
@@ -1176,6 +1254,11 @@ int main(int argc, char **argv) {
                             (unsigned long long)vp_hs[0], (unsigned long long)vp_hs[2], (unsigned long long)vp_hs[1],
                             (unsigned long long)vp_hs[3]);
                 memset(vp_hs, 0, sizeof vp_hs);
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d texture fill states: request %llu, data %llu, tags %llu, wait %llu; to first data %llu\n",
+                            frame, (unsigned long long)vp_fl[0], (unsigned long long)vp_fl[1], (unsigned long long)vp_fl[2],
+                            (unsigned long long)vp_fl[3], (unsigned long long)vp_fl[4]);
+                memset(vp_fl, 0, sizeof vp_fl);
                 memset(vp_px, 0, sizeof vp_px);
                 memset(vp_st, 0, sizeof vp_st);
                 memset(vp_mode, 0, sizeof vp_mode);
@@ -1248,9 +1331,9 @@ int main(int argc, char **argv) {
             fprintf(stderr, "frame %d: SHARC waited %llu clocks on %llu Voodoo writes, idle %llu clocks\n", frame,
                     (unsigned long long)v_wait, (unsigned long long)v_writes, (unsigned long long)d_idle);
             fprintf(stderr, "frame %d at %llu clocks: PPC %llu, SHARC %llu instructions; front buffer RTL %u at %06X, "
-                    "MAME %u at %06X: %ld of 196608 pixels differ\n", frame, (unsigned long long)(cyc - run0),
+                    "MAME %u at %06X: %ld of %d pixels differ\n", frame, (unsigned long long)(cyc - run0),
                     (unsigned long long)ppc_insns, (unsigned long long)dsp_insns, t->v_displayed & 1, roffs,
-                    mfront, moffs, diff);
+                    mfront, moffs, diff, 512 * VIS_H);
         }
         prev_vpos = t->vpos;
     }

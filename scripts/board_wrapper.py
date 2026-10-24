@@ -37,7 +37,7 @@ for i, n in enumerate(V):
 lines.append("    assign dm_read[7] = s_read; assign dm_write[7] = 1'b0; "
              "assign dm_addr[7] = 32'h3F40_0000 + {6'h0, s_addr}; assign dm_burst[7] = s_burst; "
              "assign dm_be[7] = 4'hF; assign dm_wdata[7] = 32'h0;")
-lines.append("    hornet_ddr3 #(.N(8), .WIDE(8'b1111_1111)) ddr3 (.clk, .reset, .drain(!run), .idle(),")
+lines.append("    hornet_ddr3 #(.N(8), .WIDE(8'b1111_1111), .PRI(5)) ddr3 (.clk, .reset, .drain(!run), .idle(),")
 lines.append("        .m_read(dm_read), .m_write(dm_write), .m_addr(dm_addr), .m_burst(dm_burst), .m_be(dm_be),")
 lines.append("        .m_wdata(dm_wdata), .m_waitn(dm_waitn), .m_rvalid(dm_rvalid), .m_rdata(dm_rdata),")
 lines.append("        .m_rready({2'b11, v_tex_rready, v_fbar_rready, v_fbcr_rready, 3'b111}),")

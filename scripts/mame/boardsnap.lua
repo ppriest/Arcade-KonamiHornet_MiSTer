@@ -27,6 +27,21 @@ local pokes  = os.getenv("CORE_POKES") or ""
 
 local m      = manager.machine
 local screen = m.screens[":screen"]
+
+-- CORE_DIPS "Field=Setting;...": DIP switches, set before the game first reads them
+for spec in (os.getenv("CORE_DIPS") or ""):gmatch("[^;]+") do
+    local name, want = spec:match("^(.-)=(.*)$")
+    local done = false
+    for _, port in pairs(m.ioport.ports) do
+        local fld = port.fields[name]
+        if fld then
+            for raw, label in pairs(fld.settings) do
+                if label == want then fld.user_value = raw; done = true end
+            end
+        end
+    end
+    if not done then error("no DIP setting " .. spec) end
+end
 local DEVICES = { ":", ":maincpu", ":dsp1", ":voodoo0", ":k033906_1", ":k037122_0", ":konppc",
                   ":m48t58", ":k056800", ":security_eeprom", ":watchdog" }
 

@@ -38,7 +38,7 @@
         </interleave>
         <!-- M48T58: the set's NVRAM image -->
         <part name="m48t58y-70pc1" crc="3cff1b1d"/>
-        <!-- the sound board (sw/arcsnd): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         <part name="778a08.7s" crc="6259b4bf"/>
         <part name="778a09.16p" crc="e8c6fd93"/>
         <part name="778a10.14p" crc="c6a0857b"/>
@@ -48,7 +48,8 @@
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
     <nvram index="4" size="8192"/>
 
-    <switches default="7B">
+    <!-- MAME's defaults (0x7B) but Monitor Type 15KHz -->
+    <switches default="7A">
         <dip name="Skip Post" bits="7" ids="On,Off"/>
         <dip name="Screen Flip (H)" bits="6" ids="On,Off"/>
         <dip name="Screen Flip (V)" bits="5" ids="On,Off"/>

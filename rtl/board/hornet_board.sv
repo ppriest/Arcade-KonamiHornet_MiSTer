@@ -21,9 +21,9 @@
 //
 // Video timing comes from the Voodoo's hSync/vSync/backPorch/videoDimensions registers, taken
 // from the SHARC's writes to them, as MAME's recompute_video_timing does (voodoo.cpp:2746): a
-// frame is vSync.off + vSync.on lines of line_clocks clocks; vertical blank runs from line
-// vSync.off to line 0 (vblank_start/vblank_stop, voodoo.cpp:2545-2603). line_clocks is an
-// input: MAME picks it from its own frame period (HACKS.md).
+// frame is vSync.off + vSync.on lines; vertical blank runs from line vSync.off to line 0
+// (vblank_start/vblank_stop, voodoo.cpp:2545-2603). The line rate is MAME's pick of 15.75 or
+// 25 kHz (HACKS.md).
 
 module hornet_board #(
     parameter RECIP_HEX = "rtl/raster/vraster_recip.hex"   // vraster's seed ROM, from the project
@@ -68,7 +68,7 @@ module hornet_board #(
     input  logic [31:0] s_rdata,
     input  logic [31:0] s_rdata_hi,
 
-    // picture: 512 x 384 of a 644 x vtotal raster, a pixel every 4 clocks
+    // picture: 512 x videoDimensions.y, a pixel every 4 clocks (25 kHz lines) or 5 (15.75 kHz)
     output logic        vid_ce,
     output logic        vid_de,
     output logic [9:0]  vid_x, vid_y,
@@ -114,7 +114,6 @@ module hornet_board #(
     input  logic [12:0] nvu_addr,
     output logic [7:0]  nvu_q,
     output logic        nv_wr,
-    input  logic [15:0] line_clocks,
     // pause: no new PPC instruction fetch starts and its timebase stops; the PPC stalls when its
     // queue runs dry, its data accesses and the SHARC, Voodoo and picture running on
     input  logic        pause,
@@ -624,7 +623,7 @@ hornet_pulse u_sboot (.clk_a(clk), .a(ev_dsp_reset), .clk_b(clk_dsp), .b(dsp_boo
 hornet_pulse u_sirq0 (.clk_a(clk), .a(dsp_irq_assert[0]), .clk_b(clk_dsp), .b(dsp_irq[0]));
 hornet_pulse u_sirq1 (.clk_a(clk), .a(dsp_irq_assert[1]), .clk_b(clk_dsp), .b(dsp_irq[1]));
 
-sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0)) dsp (     // gradius4 uses below 0x2A800 (docs/HACKS.md)
+sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0)) dsp (  // docs/HACKS.md
     .clk(clk_dsp), .reset(dsp_reset), .ce(dsp_ce), .boot(dsp_boot), .serial(1'b0),
     .ext_req(dx_req), .ext_we(dx_we), .ext_addr(dx_addr), .ext_wdata(dx_wdata),
     .ext_ack(dx_ack), .ext_rdata(dx_rdata), .ext_post(dx_post),
@@ -1036,13 +1035,13 @@ vraster #(.RECIP_HEX(RECIP_HEX)) voodoo (
 
 hornet_video video (
     .clk, .reset,
-    .run, .lclk, .vpos, .vtotal(vtotal),
+    .run, .lclk, .hpix, .pph, .vpos, .vtotal(vtotal),
     .k_scroll(k037122_reg[8]), .k_incy(k037122_reg[9]), .k_incx(k037122_reg[10]),
     .k_ctl(k037122_reg[12]), .k_ctl2(k037122_reg[13]),
     .k_raddr(kv_addr), .k_rdata(kv_q),
     .c_req, .c_addr, .c_ack, .c_rdata,
     .s_read, .s_addr, .s_burst, .s_waitn, .s_rvalid, .s_rdata, .s_rdata_hi,
-    .v_base(v_base0), .v_stride, .v_xoffs, .v_yoffs,
+    .v_base(v_base0), .v_stride, .v_xoffs, .v_yoffs, .v_height, .hs_start, .vs_start,
     .clut_we, .clut_idx, .clut_data,
     .vid_ce, .vid_de, .vid_x, .vid_y, .vid_r, .vid_g, .vid_b, .vid_hb, .vid_vb, .vid_hs, .vid_vs,
     .overrun(vid_overrun)
@@ -1053,31 +1052,50 @@ hornet_video video (
 // ------------------------------------------------------------------------------------------
 
 logic [11:0] vsync_on, vsync_off;      // vSync (0x224): on in bits 11:0, off in bits 27:16
+logic [7:0]  hsync_on;                 // hSync (0x220) bits 7:0: the sync pulse, hsync_on + 1 pixels
 logic [15:0] lclk;
+logic [9:0]  hpix;                     // pixel within the line, and the clock within the pixel
+logic [2:0]  pph;
 logic        vb_restart;
 // until the Voodoo's vSync is written, MAME's screen keeps hornet.cpp's 428 lines and the
 // Voodoo's vblank starts and stops at line 0 (m_vsyncstart 0, voodoo.cpp:2527-2603)
 wire  [11:0] vtotal = (vsync_on + vsync_off == 12'd0) ? 12'd428 : vsync_on + vsync_off;
 logic [9:0]  v_xoffs, v_yoffs;         // backPorch (0x208): horizontal + 2, vertical
+logic [9:0]  v_height;                 // videoDimensions (0x20C) bits 25:16
+// MAME takes the line rate whose frame is nearest its current one, hornet.cpp's 58.05 Hz when the
+// game writes the timing (voodoo.cpp:2759-2790): under 333 lines 15.75 kHz, else 25 kHz (31.5 kHz
+// from 480 lines; no set asks for it). 15.75 kHz: 813 pixels of 5 clocks (15.744 kHz); 25 kHz:
+// 640 of 4.
+wire         slow = vtotal < 12'd333;
+wire  [15:0] line_clocks = slow ? 16'd4065 : 16'd2560;
+wire  [2:0]  pdiv_m1 = slow ? 3'd4 : 3'd3;
+// sync from the Voodoo's registers: the hSync pulse ends the line, the window at backPorch after
+// it; vSync from line vSync.off to the frame's end (hornet.cpp's 428 lines' last 6 until written)
+wire  [9:0]  hs_start = (slow ? 10'd813 : 10'd640) - {2'b0, hsync_on} - 10'd1;
+wire  [11:0] vs_start = (vsync_off == 12'd0) ? vtotal - 12'd6 : vsync_off;
 logic        clut_we;
 logic [5:0]  clut_idx;
 logic [23:0] clut_data;
 logic [15:0] v_stride;
 
-// the SHARC's (or loader's) writes to vSync, backPorch and clutData (voodoo.cpp:2403-2445);
-// hSync and videoDimensions only set MAME's screen, which this board fixes at hornet.cpp's
+// the SHARC's (or loader's) writes to hSync, vSync, backPorch, videoDimensions and clutData
+// (voodoo.cpp:2403-2445)
 wire v_fbi_wr = h_write && !h_wait && h_addr < 22'h10_0000 && (h_addr[11:8] == 4'd0 || h_addr[8]);
 assign ev_swapcmd = v_fbi_wr && h_addr[7:0] == 8'h4A;
 
 always_ff @(posedge clk) begin
     clut_we <= 1'b0;
     if (reset) begin
-        // hornet.cpp's screen until the Voodoo's timing is written: visible from (41, 27)
+        // hornet.cpp's screen until the Voodoo's timing is written: 512 x 384 from (41, 27); the
+        // sync pulse gradius4's
         vsync_on <= 12'd0; vsync_off <= 12'd0; v_xoffs <= 10'd41; v_yoffs <= 10'd27;
+        v_height <= 10'd384; hsync_on <= 8'h27;
     end else if (v_fbi_wr && h_addr[7:0] == 8'h89) begin
         vsync_on  <= h_wdata[11:0];
         vsync_off <= h_wdata[27:16];
     end
+    if (v_fbi_wr && h_addr[7:0] == 8'h88) hsync_on <= h_wdata[7:0];
+    if (v_fbi_wr && h_addr[7:0] == 8'h83) v_height <= h_wdata[25:16];
     if (v_fbi_wr && h_addr[7:0] == 8'h82) begin
         v_xoffs <= {2'b0, h_wdata[7:0]} + 10'd2;
         v_yoffs <= {2'b0, h_wdata[23:16]};
@@ -1095,18 +1113,18 @@ always_ff @(posedge clk) begin
     vb_start <= 1'b0;
     vb_stop  <= 1'b0;
     if (reset) begin
-        vpos <= 10'd0; vblank <= 1'b0; lclk <= 16'd0; vb_restart <= 1'b0;
+        vpos <= 10'd0; vblank <= 1'b0; lclk <= 16'd0; hpix <= 10'd0; pph <= 3'd0; vb_restart <= 1'b0;
     end else if (ld_we && ld_sel == 4'd8) begin
         vpos <= ld_data[9:0];
         vblank <= ld_data[16];
-        lclk <= 16'd0;
+        lclk <= 16'd0; hpix <= 10'd0; pph <= 3'd0;
     end else if (run) begin
         if (vb_restart) begin
             // vblank_stop then vblank_start at line 0 (vSync.off 0): the line falls and rises
             vblank <= 1'b1; vb_start <= 1'b1; vb_restart <= 1'b0;
         end
         if (lclk + 16'd1 >= line_clocks) begin
-            lclk <= 16'd0;
+            lclk <= 16'd0; hpix <= 10'd0; pph <= 3'd0;
             if ({2'b0, vpos} + 12'd1 >= vtotal) vpos <= 10'd0;
             else vpos <= vpos + 10'd1;
             // vblank_start at line vSync.off, vblank_stop at line 0
@@ -1115,8 +1133,11 @@ always_ff @(posedge clk) begin
                 vblank <= 1'b0; vb_stop <= 1'b1;
                 if (vsync_off == 12'd0) vb_restart <= 1'b1;
             end
-        end else
+        end else begin
             lclk <= lclk + 16'd1;
+            if (pph == pdiv_m1) begin pph <= 3'd0; hpix <= hpix + 10'd1; end
+            else pph <= pph + 3'd1;
+        end
     end
 end
 

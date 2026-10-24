@@ -78,7 +78,7 @@ localparam CONF_STR = {
 	"O[8],Slowdown indicator,Off,On;",
 	"-;",
 	"R[0],Reset and close OSD;",
-	"J1,Shot,Missile,Power Up,Start,Coin,Service,Test,Pause;",
+	"J1,Power Up,Shot,Missile,Start,Coin,Service,Test,Pause;",
 	"jn,A,B,X,Start,Select,R,L,Y;",
 	"V,v",`BUILD_DATE
 };
@@ -192,7 +192,7 @@ always @(posedge clk_sys) begin
 end
 
 // DIP switches
-reg [7:0] dsw = 8'h7B;                  // gradius4's defaults (hornet.cpp INPUT_PORTS gradius4)
+reg [7:0] dsw = 8'h7A;                  // gradius4's defaults (hornet.cpp), Monitor Type 15KHz
 always @(posedge clk_sys) if (ioctl_wr && ioctl_index == 16'd254 && ioctl_addr == 27'd0) dsw <= ioctl_dout;
 
 // cheats (ioctl index 255): the active codes, 16 bytes each, little-endian words, into the board's
@@ -348,7 +348,7 @@ assign m_be_hi[4:3] = '0; assign m_be_hi[8] = '0;
 assign m_wdata_hi[4:3] = '0; assign m_wdata_hi[8] = '0;
 wire [31:0]      m_rdata_hi;
 
-// players 1 and 2: J1's bits 0-3 right, left, down, up; 4-6 Shot, Missile, Power Up; 7 Start,
+// players 1 and 2: J1's bits 0-3 right, left, down, up; 4-6 Power Up, Shot, Missile (buttons 1-3); 7 Start,
 // 8 Coin, 9 Service, 10 Test (hornet.cpp INPUT_PORTS hornet: active low); 11 Pause, a toggle
 reg pause = 1'b0, pause_b = 1'b0;
 always @(posedge clk_sys) begin
@@ -404,7 +404,7 @@ hornet_board board (
 	.in0, .in1, .in2, .in3(8'hF0), .dsw,
 	.rtc_set, .rtc_time(rtc[55:0]),
 	.nvu_addr(ioctl_addr[12:0]), .nvu_q(ioctl_din), .nv_wr,
-	.line_clocks(16'd2560), .pause,
+	.pause,
 	.vblank(vblank), .vpos(), .v_displayed(v_displayed), .v_base0(v_base0), .v_base1(),
 	.ev_swapcmd(ev_swapcmd), .ev_v_write(ev_v_write), .ev_v_wait(ev_v_wait), .v_dbg(v_dbg),
 	.v_ring_off, .v_ring_bad,
@@ -450,7 +450,7 @@ wire [28:0] h_addr, l_addr;
 wire        h_rd, h_we, l_rd;
 wire [23:0] ddr_dbg;
 wire [77:0] ddr_cmd;
-hornet_ddr3 #(.N(9), .WIDE(DDR_WIDE)) ddr3 (
+hornet_ddr3 #(.N(9), .WIDE(DDR_WIDE), .PRI(5)) ddr3 (     // 5: vraster's texture fills
 	.clk(clk_sys), .reset(!pll_locked), .drain(board_reset), .idle(ddr_idle),
 	.m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_waitn, .m_rvalid, .m_rready, .m_rdata,
 	.m_be_hi(m_be_hi), .m_wdata_hi(m_wdata_hi), .m_rdata_hi(m_rdata_hi),

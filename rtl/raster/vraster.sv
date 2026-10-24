@@ -268,6 +268,7 @@ cstate_t cs;
 logic [21:0] c_addr;
 logic [31:0] c_data;
 logic        fill_done, tri_done;
+logic        drain_pend;              // the last triangle's spans are still in the pipeline (vraster_tri)
 logic        fill_go, tri_go;
 logic [21:0] texw_a;                    // a texture write's byte address
 logic [31:0] c_m4, c_m12;               // c_data's float magnitude as x.4, x.12, 32.32
@@ -275,6 +276,12 @@ logic [63:0] c_m32;
 logic signed [4:0] sub_dx, sub_dy;      // the sub-pixel adjustment: 8 - vertex A's fraction
 logic signed [31:0] adj_ay, adj_ax, adj_a;   // its products (y, x) and their sums
 logic signed [63:0] adj_wy, adj_wx, adj_sy, adj_sx, adj_ty, adj_tx, adj_w, adj_s, adj_t;
+
+// the registers the next triangle may write while the last one's spans drain: vertices, starts,
+// gradients and triangleCMD (integer and float forms); the pipeline keeps its own x-gradients
+function automatic logic tri_reg(input logic [7:0] r);
+    return (r >= 8'h02 && r <= 8'h20) || (r >= 8'h22 && r <= 8'h40);
+endfunction
 
 // the register a FIFO entry names, after MAME's alias map (voodoo.cpp:229) when remapped
 function automatic logic [7:0] reg_of(input logic [21:0] a);
@@ -304,7 +311,7 @@ always_ff @(posedge clk) begin
             c_m4 <= fmag32(c_data, 4); c_m12 <= fmag32(c_data, 12); c_m32 <= fmag64(c_data, 32);
             cs <= C_EXEC;
         end
-        C_EXEC: begin
+        C_EXEC: if (!drain_pend || (c_addr < 22'h100000 && tri_reg(reg_of(c_addr)))) begin
             logic [7:0] r;
             r = reg_of(c_addr);
             cs <= C_IDLE;
@@ -391,7 +398,7 @@ endfunction
 // status (MAME reg_status_r) and the readable registers
 always_comb begin
     logic busy;
-    busy = !f_empty || cs != C_IDLE || !s_empty || ring_used;
+    busy = !f_empty || cs != C_IDLE || !s_empty || ring_used || drain_pend;
     rd_data = 32'h0;
     case (io_h2fLw_address[7:0])
     8'h00: rd_data = {1'b0, swaps_pending, 16'hFFFF, frontbuf, {3{busy}}, io_vRetrace,

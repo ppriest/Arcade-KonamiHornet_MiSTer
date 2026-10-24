@@ -1256,6 +1256,19 @@ ack address that is also an input port must acknowledge on writes only.
 - **[GX] MAME's `nvram/<set>/eeprom` for a 16-bit serial EEPROM is little-endian words.** MAME's
   memory dumped as it is on x86. A bench loading it big-endian ran identically to MAME for 700
   frames until the game's first settings read.
+- **[KonamiHornet] A census taken in gameplay says nothing about boot.** The SHARC's DMA packing was
+  removed on the evidence of four gameplay windows (control words 0x201/0x207 only). The boot loader's
+  DMA at frame 152 is a DTYPE (48-bit) transfer, 0x221; without it the SHARC's program loaded wrong,
+  the power-on test failed on hardware and the Voodoo's timing was never written. Before cutting a
+  feature, run the census from power-on too, and boot the bench from a snapshot before the first use.
+- **[KonamiHornet] An error inside a Lua memory-tap callback is silent.** A frame notifier's error
+  prints `[LUA ERROR]`; a tap's does not, and the tap looks as if it never fired. MAME 0.289's
+  `screen:vpos()` raised inside one, and three captures of the swap command came back empty while
+  a histogram in the same tap counted its writes. Wrap a tap's body in `pcall` and log the error.
+- **[KonamiHornet] A DIP the game reads at boot can be set from the autoboot script.**
+  `port.fields[name].user_value = raw` before the first frame took effect for Hornet's Monitor
+  Type (DSW read back 0x7A from frame 1, and the game programmed the 15 kHz timing); no seeded
+  `cfg` pass was needed (`scripts/mame_board_snapshot.py --dip`).
 
 ## Hardware bring-up (MiSTer / DE10-nano)
 

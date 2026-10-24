@@ -36,7 +36,7 @@ SETS = {
         prg="837c01.27p", data=("837a04.16t", "837a05.14t"),
         cg=(("837a13.24u", "837a14.32u"), ("837a15.24v", "837a16.32v")), nv="m48t58y-70pc1_jac",
         snd_prg="837a08.7s", snd_smp=("837a09.16p", "837a10.14p"),
-        buttons="Shot,Missile,Power Up", dip1="", note=""),
+        buttons="Power Up,Shot,Missile", dip1="", note=""),
     "nbapbp": dict(
         desc="NBA Play By Play (ver UAB)", file="NBA Play By Play (ver UAB)", category="Sports",
         prg="778b01.27p", data=("778a04.16t", "778a05.14t"),
@@ -185,7 +185,8 @@ def write(setname, s, romdir, mamever, mame_dir):
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
     <nvram index="4" size="8192"/>
 {cheats_block(mame_cheats(setname, mame_dir))}
-    <switches default="7B">
+    <!-- MAME's defaults (0x7B) but Monitor Type 15KHz -->
+    <switches default="7A">
         <dip name="Skip Post" bits="7" ids="On,Off"/>
         <dip name="Screen Flip (H)" bits="6" ids="On,Off"/>
         <dip name="Screen Flip (V)" bits="5" ids="On,Off"/>

@@ -31,7 +31,8 @@ module sharc2_core #(
     parameter int DM_WORDS = 32768,     // block 1 as built: addresses above it alias (the board's 16K,
                                         // gradius4's use: docs/HACKS.md)
     parameter bit BENCH = 0,            // X reads its R operands again in serial mode (bench pokes)
-    parameter bit DMA_LOCK = 1          // an instruction's end waits for the last DMA quantum
+    parameter bit DMA_LOCK = 1,         // an instruction's end waits for the last DMA quantum
+    parameter bit DMA_PACK = 1          // DMA packing (PMODE); 0: none (DTYPE's 48-bit words stay)
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -1732,7 +1733,12 @@ always_ff @(posedge clk) begin
                     op_dst[ch] <= (c.s.dma_int_index[ch] & 32'h1FFFF) | 32'h20000;
                     op_dst_mod[ch] <= c.s.dma_int_modifier[ch]; op_dst_count[ch] <= c.s.dma_int_count[ch];
                 end
-                op_pmode[ch] <= dtype ? 32'd4 : {30'h0, c.s.dma_control[ch][7:6]};
+                op_pmode[ch] <= dtype ? 32'd4 : !DMA_PACK ? 32'h0 : {30'h0, c.s.dma_control[ch][7:6]};
+// synthesis translate_off
+                if (!DMA_PACK && !dtype && c.s.dma_control[ch][7:6] != 2'd0)
+                    $display("sharc2_core: DMA channel %0d asks for packing (control %h); DMA_PACK is 0",
+                             ch, c.s.dma_control[ch]);
+// synthesis translate_on
                 op_chain_ptr[ch] <= 32'h0;
                 op_chained[ch] <= 1'b0;
                 op_active[ch] <= 1'b1;
