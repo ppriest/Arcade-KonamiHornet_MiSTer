@@ -28,7 +28,7 @@ module tb_sharc2 #(parameter int DMW = 32768) (
     input  logic [63:0] dbg_wdata
 );
     sharc2_core #(.BENCH(1), .DM_WORDS(DMW)) dsp (
-        .clk, .reset, .ce, .boot(1'b0), .serial, .ext_req, .ext_we, .ext_addr, .ext_wdata, .ext_ack, .ext_rdata,
+        .clk, .reset, .ce, .boot(1'b0), .serial, .ext_req, .ext_we, .ext_addr, .ext_wdata, .ext_ack, .ext_rdata, .ext_post(1'b0),
         .irq_in(3'b000), .irq_assert(3'b000), .irq_check_en, .dbg_irq_set, .dbg_iop_ovr, .dbg_iop_val,
         .dbg_exec, .dbg_pc, .dbg_op, .dbg_sel, .dbg_val, .dbg_idle,
         .dbg_pm_we, .dbg_pm_addr, .dbg_pm_wdata, .dbg_dm_we, .dbg_dm_addr, .dbg_dm_wdata,

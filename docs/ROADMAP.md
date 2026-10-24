@@ -108,7 +108,7 @@ memory FIFO (a 64K-entry ring in DDR3, `vraster`): the 2048-entry FIFO alone nee
 | Voodoo 1 | SpinalVoodoo, generated Verilog vendored; no binary release while unlicensed (user decision) | github.com/fayalalebrun/SpinalVoodoo (no licence) |
 | K037122 | written from MAME's model | `src/mame/konami/k037122.cpp` |
 | K033906, konppc glue | written from MAME's model | `k033906.cpp`, `konppc.cpp` |
-| 68000 | Musashi, on the HPS | `sw/arcsnd/PROVENANCE.md` |
+| 68000 | Musashi, on the HPS | MiSTer_ArcadeSoundServer's `PROVENANCE.md` |
 | RF5C400 | MAME's, on the HPS | `src/devices/sound/rf5c400.cpp` |
 | K056800, M48T58, X76F041 | written from MAME's model | device files |
 
@@ -218,7 +218,7 @@ Open: play-through on hardware, release-revision timing (the HDMI scaler clock b
 clk_sys hold path in the last stp build), flip screen, fast ROM loading, the security EEPROM and
 JVS (gradius4's boot does not select the X76F041).
 
-**Phase 3 — Sound. Done** (`2779c02`): the sound board on the HPS (`sw/arcsnd`, Musashi and
+**Phase 3 — Sound. Done** (`2779c02`): the sound board on the HPS (`sw/arcsnd`, now the MiSTer_ArcadeSoundServer project; Musashi and
 MAME's RF5C400 and K056800), fed through DDR3 by `rtl/mister/hornet_sndbridge.sv`; the FPGA had
 no room for fx68k. Heard on the DE10-nano.
 
@@ -227,6 +227,12 @@ no room for fx68k. Heard on the DE10-nano.
 **Phase 5 — Savestates.** Optional; state kept reachable from Phase 1 (`docs/STATE.md`).
 
 ## Open items
+
+**Walking robots walk in the air (stage 4's rocky section, before the lava).** They should fall to
+the ground (user report on the DE10-nano, build 30000031). Game logic, not drawing: the Voodoo
+window at frame 39600 draws the same with and without the day's vraster changes. Not yet
+compared with MAME's object state.
+
 
 **SpinalVoodoo has no licence (GitHub `license: null`).** The board no longer uses it (vraster
 replaced it); `rtl/voodoo` stays as the earlier reference until removed. The repository stays

@@ -73,6 +73,7 @@ module vraster #(
     input  logic        io_memFbColorRead_readDataValid,
     input  logic [31:0] io_memFbColorRead_readData,
     input  logic [31:0] io_memFbColorRead_readDataHi,
+    output logic        io_memFbColorRead_readReady,    // read data may come the next clock
 
     output logic        io_memFbAuxRead_read, io_memFbAuxRead_write,
     input  logic        io_memFbAuxRead_waitRequestn,
@@ -82,6 +83,7 @@ module vraster #(
     output logic [31:0] io_memFbAuxRead_writeData,
     input  logic        io_memFbAuxRead_readDataValid,
     input  logic [31:0] io_memFbAuxRead_readData,
+    output logic        io_memFbAuxRead_readReady,
     input  logic [31:0] io_memFbAuxRead_readDataHi,
 
     output logic        io_memTex_read, io_memTex_write,
@@ -92,6 +94,11 @@ module vraster #(
     output logic [31:0] io_memTex_writeData,
     input  logic        io_memTex_readDataValid,
     input  logic [31:0] io_memTex_readData,
+    // wide (hornet_ddr3 WIDE): a beat a handshake; readReady as the frame-buffer reads'
+    input  logic [31:0] io_memTex_readDataHi,
+    output logic [31:0] io_memTex_writeDataHi,
+    output logic [3:0]  io_memTex_byteEnableHi,
+    output logic        io_memTex_readReady,
     output logic        io_memFifo_read, io_memFifo_write,
     input  logic        io_memFifo_waitRequestn,
     output logic [31:0] io_memFifo_address,
@@ -410,15 +417,19 @@ end
 
 `include "vraster_tri.svh"
 
-// memTex: the texture cache's fills, or the command processor's texture writes
+// memTex: the texture cache's fills, or the command processor's texture writes (a beat, the word's
+// half enabled). A fill's row is whole beats: an 8-bit row at an odd word starts a word early
+wire [21:0] tf_a = texel_addr(cf_s, cf_t + {6'h0, cf_rq});
 assign tex_clear = cs == C_TEXW && io_memTex_waitRequestn;
 assign io_memTex_read = fls == F2_REQ;
 assign io_memTex_write = cs == C_TEXW;
-assign io_memTex_address = (cs == C_TEXW) ? TEX_BASE + {10'h0, texw_a}
-                                          : TEX_BASE + {10'h0, texel_addr(cf_s, cf_t + {6'h0, cf_rq})};
-assign io_memTex_burstCount = (cs == C_TEXW) ? 11'd1 : t16 ? {6'h0, cf_kn, 1'b0} : {7'h0, cf_kn};
-assign io_memTex_byteEnable = 4'hF;
+assign io_memTex_address = TEX_BASE + {10'h0, (cs == C_TEXW) ? texw_a[21:3] : tf_a[21:3], 3'b000};
+assign io_memTex_burstCount = (cs == C_TEXW) ? 11'd2 : t16 ? {6'h0, cf_kn, 1'b0}
+                                                         : {6'h0, (5'(tf_a[2]) + 5'(cf_kn) + 5'd1) & 5'h1E};
+assign io_memTex_byteEnable = (cs == C_TEXW && texw_a[2]) ? 4'h0 : 4'hF;
+assign io_memTex_byteEnableHi = (cs == C_TEXW && !texw_a[2]) ? 4'h0 : 4'hF;
 assign io_memTex_writeData = c_data;
+assign io_memTex_writeDataHi = c_data;
 
 
 // status for the debug probes (bit 5: a texture-cache fill holds the pixel pipeline)

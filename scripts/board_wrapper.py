@@ -28,7 +28,8 @@ lines.append("    assign dm_be_hi[0] = v_fbw_be_hi; assign dm_wdata_hi[0] = v_fb
 lines.append("    assign dm_be_hi[6] = v_mf_be_hi; assign dm_wdata_hi[6] = v_mf_wdata_hi;")
 lines.append("    assign dm_be_hi[1] = v_fbcw_be_hi; assign dm_wdata_hi[1] = v_fbcw_wdata_hi;")
 lines.append("    assign dm_be_hi[2] = v_fbaw_be_hi; assign dm_wdata_hi[2] = v_fbaw_wdata_hi;")
-lines.append("    assign dm_be_hi[5:3] = '0; assign dm_wdata_hi[5:3] = '0; assign dm_be_hi[7] = '0; assign dm_wdata_hi[7] = '0;")
+lines.append("    assign dm_be_hi[5] = v_tex_be_hi; assign dm_wdata_hi[5] = v_tex_wdata_hi;")
+lines.append("    assign dm_be_hi[4:3] = '0; assign dm_wdata_hi[4:3] = '0; assign dm_be_hi[7] = '0; assign dm_wdata_hi[7] = '0;")
 for i, n in enumerate(V):
     lines.append(f"    assign dm_read[{i}] = v_{n}_read; assign dm_write[{i}] = v_{n}_write; "
                  f"assign dm_addr[{i}] = v_{n}_addr; assign dm_burst[{i}] = v_{n}_burst; "
@@ -36,9 +37,10 @@ for i, n in enumerate(V):
 lines.append("    assign dm_read[7] = s_read; assign dm_write[7] = 1'b0; "
              "assign dm_addr[7] = 32'h3F40_0000 + {6'h0, s_addr}; assign dm_burst[7] = s_burst; "
              "assign dm_be[7] = 4'hF; assign dm_wdata[7] = 32'h0;")
-lines.append("    hornet_ddr3 #(.N(8), .WIDE(8'b1101_1111)) ddr3 (.clk, .reset, .drain(!run), .idle(),")
+lines.append("    hornet_ddr3 #(.N(8), .WIDE(8'b1111_1111)) ddr3 (.clk, .reset, .drain(!run), .idle(),")
 lines.append("        .m_read(dm_read), .m_write(dm_write), .m_addr(dm_addr), .m_burst(dm_burst), .m_be(dm_be),")
 lines.append("        .m_wdata(dm_wdata), .m_waitn(dm_waitn), .m_rvalid(dm_rvalid), .m_rdata(dm_rdata),")
+lines.append("        .m_rready({2'b11, v_tex_rready, v_fbar_rready, v_fbcr_rready, 3'b111}),")
 lines.append("        .m_be_hi(dm_be_hi), .m_wdata_hi(dm_wdata_hi), .m_rdata_hi(dm_rdata_hi),")
 lines.append("        .DDRAM_BUSY, .DDRAM_BURSTCNT, .DDRAM_ADDR, .DDRAM_DOUT, .DDRAM_DOUT_READY, .DDRAM_RD,")
 lines.append("        .DDRAM_DIN, .DDRAM_BE, .DDRAM_WE, .dbg(ddr_dbg), .dbg_cmd());")
@@ -70,6 +72,7 @@ for i, n in enumerate(V):
                 f".v_{n}_rdata(ddr3_en ? dm_rdata : v_{n}_rdata)")
 conn.append(".v_mf_rdata_hi(ddr3_en ? dm_rdata_hi : v_mf_rdata_hi)")
 conn.append(".v_fbcr_rdata_hi(ddr3_en ? dm_rdata_hi : v_fbcr_rdata_hi), .v_fbar_rdata_hi(ddr3_en ? dm_rdata_hi : v_fbar_rdata_hi)")
+conn.append(".v_tex_rdata_hi(ddr3_en ? dm_rdata_hi : v_tex_rdata_hi)")
 conn.append(".s_waitn(ddr3_en ? dm_waitn[7] : s_waitn), .s_rvalid(ddr3_en ? dm_rvalid[7] : s_rvalid), "
             ".s_rdata(ddr3_en ? dm_rdata : s_rdata), .s_rdata_hi(ddr3_en ? dm_rdata_hi : s_rdata_hi)")
 

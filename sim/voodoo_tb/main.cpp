@@ -58,15 +58,19 @@ struct AvPort {
     bool wide = false;
     IData *writeDataHi = nullptr, *readDataHi = nullptr;
     CData *byteEnableHi = nullptr;
+    // a master's readReady (vraster's frame-buffer reads): read data comes only the clock after it was high
+    CData *readReady = nullptr;
+    bool rdy_q = true;
     struct Burst { uint32_t addr; int left; uint64_t ready; };
     std::deque<Burst> rq;
     uint64_t now = 0;
     uint64_t reads = 0, writes = 0, bad = 0, above2m = 0;
+    bool due() const { return !rq.empty() && rq.front().ready <= now && (!readReady || rdy_q); }
 
     void drive() {                         // before the rising edge
         *waitRequestn = (int)rq.size() < g_memq;     // writes never stall otherwise
         *readDataValid = 0;
-        if (!rq.empty() && rq.front().ready <= now) {
+        if (due()) {
             uint8_t *p = mem_at(rq.front().addr);
             uint32_t d = 0;
             if (p) memcpy(&d, p, 4); else bad++;
@@ -80,7 +84,7 @@ struct AvPort {
         }
     }
     void edge() {                          // what the rising edge takes
-        if (!rq.empty() && rq.front().ready <= now) {
+        if (due()) {
             rq.front().addr += wide ? 8 : 4;
             rq.front().left -= wide ? 2 : 1;
             if (rq.front().left <= 0) rq.pop_front();
@@ -115,6 +119,7 @@ struct AvPort {
             rq.push_back({*address, (int)*burstCount, now + 1 + g_memlat});
             reads += *burstCount;
         }
+        if (readReady) rdy_q = *readReady;
         now++;
     }
 };
@@ -170,6 +175,7 @@ int main(int argc, char **argv) {
     const char *s;
     std::string win = (s = Verilated::commandArgsPlusMatch("win=")) && *s ? std::string(s + 5) : "";
     long maxcyc = (s = Verilated::commandArgsPlusMatch("cycles=")) && *s ? atol(s + 8) : 400000000;
+    int drain_polls = (s = Verilated::commandArgsPlusMatch("drain=")) && *s ? atoi(s + 7) : 20000;
     if ((s = Verilated::commandArgsPlusMatch("memlat=")) && *s) g_memlat = atoi(s + 8);
     if ((s = Verilated::commandArgsPlusMatch("memq=")) && *s) g_memq = atoi(s + 6);
     if (win.empty()) { fprintf(stderr, "+win=<dir> required\n"); return 1; }
@@ -191,8 +197,10 @@ int main(int argc, char **argv) {
     ports[6].wide = true; ports[6].writeDataHi = &t->io_memFifo_writeDataHi; ports[6].byteEnableHi = &t->io_memFifo_byteEnableHi; ports[6].readDataHi = &t->io_memFifo_readDataHi;
     ports[1].wide = true; ports[1].writeDataHi = &t->io_memFbColorWrite_writeDataHi; ports[1].byteEnableHi = &t->io_memFbColorWrite_byteEnableHi;
     ports[2].wide = true; ports[2].writeDataHi = &t->io_memFbAuxWrite_writeDataHi; ports[2].byteEnableHi = &t->io_memFbAuxWrite_byteEnableHi;
-    ports[3].wide = true; ports[3].readDataHi = &t->io_memFbColorRead_readDataHi;
-    ports[4].wide = true; ports[4].readDataHi = &t->io_memFbAuxRead_readDataHi;
+    ports[3].wide = true; ports[3].readDataHi = &t->io_memFbColorRead_readDataHi; ports[3].readReady = &t->io_memFbColorRead_readReady;
+    ports[4].wide = true; ports[4].readDataHi = &t->io_memFbAuxRead_readDataHi; ports[4].readReady = &t->io_memFbAuxRead_readReady;
+    ports[5].wide = true; ports[5].readDataHi = &t->io_memTex_readDataHi; ports[5].readReady = &t->io_memTex_readReady;
+    ports[5].writeDataHi = &t->io_memTex_writeDataHi; ports[5].byteEnableHi = &t->io_memTex_byteEnableHi;
 #else
     AvPort ports[6] = {PORT(t, memFbWrite), PORT(t, memFbColorWrite), PORT(t, memFbAuxWrite),
                        PORT(t, memFbColorRead), PORT(t, memFbAuxRead), PORT(t, memTex)};
@@ -324,8 +332,8 @@ int main(int argc, char **argv) {
     while (fgets(line, sizeof line, wf) && cyc < (uint64_t)maxcyc) {
         if (line[0] == 'W' && sscanf(line, "%c %x %x", &kind, &off, &data) == 3) { wr(off, data); nwr++; }
         else if (line[0] == 'F') {
-            // let the pipeline drain: wait for status busy (bit 7) to clear
-            for (int i = 0; i < 20000; i++) { uint32_t st = rd(0); if (!(st & 0x80)) break; for (int k = 0; k < 64; k++) clock(); }
+            // let the pipeline drain: wait for status busy (bit 7) to clear, at most +drain= polls
+            for (int i = 0; i < drain_polls; i++) { uint32_t st = rd(0); if (!(st & 0x80)) break; for (int k = 0; k < 64; k++) clock(); }
             nfr++;
             fprintf(stderr, "frame %ld: %ld writes, %llu clocks\n", nfr, nwr, (unsigned long long)cyc);
             // the Voodoo's statistics (fbiPixelsIn, fbiChromaFail, fbiZfuncFail, fbiAfuncFail, fbiPixelsOut)

@@ -64,7 +64,7 @@ the host: 9,200,000 vectors over seeds 1 and 7, 23 operations, result and flags,
 | CLUT entry 32 of 0 with entry 31 non-zero reads as white | `voodoo.cpp:862-863` (for Midway games) | copies, `hornet_video.sv` `clut_at` | — |
 | 2x2 dither matrix 8 10 / 11 9 | `voodoo_render.cpp:45-51`, chosen so that iteagle's (Voodoo 3) memory tests pass | copies: `rtl/voodoo/patches/0002-dither-2x2-mame.patch` replaces SpinalVoodoo's 86Box tables (matrix 2 10 / 14 6). The 4x4 tables agree. Drawn-buffer pixels differing from MAME: 10,530 to 4,613 (window 2150), 21,118 to 5,381 (7500) | a Voodoo 1 frame buffer drawn with 2x2 dither |
 
-## Sound board (sw/arcsnd/hornet, on the HPS)
+## Sound board (MiSTer_ArcadeSoundServer's src/hornet, on the HPS)
 
 | Kludge | MAME | Core | Would settle it |
 |---|---|---|---|

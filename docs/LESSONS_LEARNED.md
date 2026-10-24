@@ -527,6 +527,18 @@ edge: only when the game state put a polygon's vertex there, which the captured 
 not. Found by dumping the frame buffers from DDR3 on the HPS when the bands appeared (they were in
 the buffer, so the rasteriser drew them), then reading the edge code against MAME's float edges.
 
+### [KonamiHornet] Two writers to one RAM port in one clock: make the collision impossible or an error
+
+vraster's texture fill wrote an 8-bit word's second texel pair a clock late into the bank of its
+row's parity, on the assumption (a comment) that consecutive words alternate rows. They do only for a
+one-tile run; with longer runs the late write and the next word's write hit the same bank in one
+clock, and the later assignment in the `always_comb` silently won. Gradius IV's lava stage draws its
+haze from A8 textures: dark streaks, 40,805 pixels more than 8 levels off MAME
+(`vraster_tb +win=debug/gradius4-voodoo44400`, a window captured with the cheat pokes). No earlier
+window had an 8-bit fill, so every bench passed. Capture a window for each texture format a game
+uses, and give a port shared by two writers either an arbiter or a simulation check that they never
+meet.
+
 ## Sprite lists, line buffers and snapshots
 
 ### A swap is not a copy
@@ -1284,6 +1296,13 @@ ack address that is also an input port must acknowledge on writes only.
   not the driver reference the notes cite and its Lua surface can differ.
 
 ## Tooling and workflow (Quartus, ModelSim, Verilator, and the shell around them)
+
+- **[KonamiHornet] At 99% ALMs the fitter can crash or hang for one seed: change the seed, and
+  bound the build's time.** Commit 189495e at seed 3: `*** Fatal Error: Access Violation at
+  0000000000000000` in quartus_fit at "Fitter placement preparation" twice, at the same point;
+  seed 4 fitted in the usual time. The build of the commit before ran 90 minutes in the fitter with
+  no log line after placement started. Killing the build script leaves `quartus_sh`/`quartus_fit`
+  running and `build/.build_running` behind: stop them by command line and remove the marker.
 
 - **Working directory does not reliably persist into backgrounded commands.** `cd <project> &&
   <tool>` in one line, or put the `cd` in the Tcl. Symptoms: `Error (23018): Tcl Script File ... not

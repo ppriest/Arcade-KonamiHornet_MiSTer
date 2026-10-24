@@ -75,6 +75,7 @@ localparam CONF_STR = {
 	"DIP;",
 	"C,Cheats;",
 	"O[7],Cheats Enabled,Yes,No;",
+	"O[8],Slowdown indicator,Off,On;",
 	"-;",
 	"R[0],Reset and close OSD;",
 	"J1,Shot,Missile,Power Up,Start,Coin,Service,Test,Pause;",
@@ -86,7 +87,8 @@ wire forced_scandoubler;
 wire direct_video;
 wire   [1:0] buttons;
 wire [127:0] status;
-wire  [31:0] joystick_0, joystick_1;
+wire  [31:0] joy_pad_0, joy_pad_1;
+wire  [10:0] ps2_key;
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
@@ -113,8 +115,9 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.status_menumask({10'd0, direct_video, 5'd0}),
 	.direct_video(direct_video),
 
-	.joystick_0(joystick_0),
-	.joystick_1(joystick_1),
+	.joystick_0(joy_pad_0),
+	.joystick_1(joy_pad_1),
+	.ps2_key(ps2_key),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
@@ -130,6 +133,15 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.RTC(rtc)
 );
+
+// MAME's default keys beside the pads (rtl/mame_keys.sv), in the J1 line's layout: F2 the test
+// switch, 9/0 the service coins
+wire [31:0] key_0, key_1;
+wire  [1:0] svc_coin;
+mame_keys #(.BUTTONS(3), .START(7), .COIN(8), .PAUSE(11), .SERVICE(10)) u_keys
+	(.clk(clk_sys), .ps2_key, .key0(key_0), .key1(key_1), .svc_coin);
+wire [31:0] joystick_0 = joy_pad_0 | key_0 | {22'd0, svc_coin[0], 9'd0};
+wire [31:0] joystick_1 = joy_pad_1 | key_1 | {22'd0, svc_coin[1], 9'd0};
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
@@ -313,6 +325,7 @@ assign sd_dbg = 2'b00;
 wire [31:0] ppc_pc;
 wire [23:0] dsp_pc;
 wire [7:0]  vid_r, vid_g, vid_b;
+wire [9:0]  vid_x, vid_y;
 wire        snd_wr, snd_live;
 wire [3:0]  snd_wreg;
 wire [7:0]  snd_wdata;
@@ -320,18 +333,19 @@ wire [15:0] snd_reply;
 
 // hornet_ddr3's masters: the Voodoo's fbw, fbcw, fbaw, fbcr, fbar, tex and its memory FIFO's
 // ring, the HDMI rotator, then port S (the last is served first)
-wire [8:0]       m_read, m_write, m_waitn, m_rvalid;
+wire [8:0]       m_read, m_write, m_waitn, m_rvalid, m_rready;
+assign m_rready[2:0] = '1; assign m_rready[8:6] = '1;   // all but vraster's frame-buffer reads always take
 wire [8:0][31:0] m_addr, m_wdata;
 wire [8:0][10:0] m_burst;
 wire [8:0][3:0]  m_be;
 wire [31:0]      m_rdata;
 // wide masters: the fast fill (0), the span writes (1, 2) and reads (3, 4), the memory FIFO's
 // ring (6), the rotator (7), port S (8); the texture master (5) narrow
-localparam logic [8:0] DDR_WIDE = 9'b1_1101_1111;
+localparam logic [8:0] DDR_WIDE = 9'b1_1111_1111;
 wire [8:0][3:0]  m_be_hi;
 wire [8:0][31:0] m_wdata_hi;
-assign m_be_hi[5:3] = '0; assign m_be_hi[8] = '0;
-assign m_wdata_hi[5:3] = '0; assign m_wdata_hi[8] = '0;
+assign m_be_hi[4:3] = '0; assign m_be_hi[8] = '0;
+assign m_wdata_hi[4:3] = '0; assign m_wdata_hi[8] = '0;
 wire [31:0]      m_rdata_hi;
 
 // players 1 and 2: J1's bits 0-3 right, left, down, up; 4-6 Shot, Missile, Power Up; 7 Start,
@@ -358,7 +372,7 @@ hornet_board board (
 	.cht_we, .cht_wa, .cht_wd, .cht_n(status[7] ? 5'd0 : cht_n),
 	.c_req, .c_addr, .c_ack, .c_rdata,
 	.s_read, .s_addr, .s_burst, .s_waitn, .s_rvalid, .s_rdata, .s_rdata_hi,
-	.vid_ce, .vid_de, .vid_x(), .vid_y(), .vid_r, .vid_g, .vid_b,
+	.vid_ce, .vid_de, .vid_x, .vid_y, .vid_r, .vid_g, .vid_b,
 	.vid_hb, .vid_vb, .vid_hs, .vid_vs, .vid_overrun(vid_overrun),
 	.v_fbw_read(m_read[0]),  .v_fbw_write(m_write[0]),  .v_fbw_waitn(m_waitn[0]),
 	.v_fbcw_read(m_read[1]), .v_fbcw_write(m_write[1]), .v_fbcw_waitn(m_waitn[1]),
@@ -380,6 +394,8 @@ hornet_board board (
 	.v_fbcr_wdata(m_wdata[3]), .v_fbar_wdata(m_wdata[4]), .v_tex_wdata(m_wdata[5]),
 	.v_fbw_rvalid(m_rvalid[0]), .v_fbcw_rvalid(m_rvalid[1]), .v_fbaw_rvalid(m_rvalid[2]),
 	.v_fbcr_rvalid(m_rvalid[3]), .v_fbar_rvalid(m_rvalid[4]), .v_tex_rvalid(m_rvalid[5]),
+	.v_fbcr_rready(m_rready[3]), .v_fbar_rready(m_rready[4]), .v_tex_rready(m_rready[5]),
+	.v_tex_rdata_hi(m_rdata_hi), .v_tex_wdata_hi(m_wdata_hi[5]), .v_tex_be_hi(m_be_hi[5]),
 	.v_fbw_rdata(m_rdata), .v_fbcw_rdata(m_rdata), .v_fbaw_rdata(m_rdata),
 	.v_fbcr_rdata(m_rdata), .v_fbar_rdata(m_rdata), .v_tex_rdata(m_rdata),
 	.v_mf_read(m_read[6]), .v_mf_write(m_write[6]), .v_mf_waitn(m_waitn[6]), .v_mf_addr(m_addr[6]),
@@ -436,7 +452,7 @@ wire [23:0] ddr_dbg;
 wire [77:0] ddr_cmd;
 hornet_ddr3 #(.N(9), .WIDE(DDR_WIDE)) ddr3 (
 	.clk(clk_sys), .reset(!pll_locked), .drain(board_reset), .idle(ddr_idle),
-	.m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_waitn, .m_rvalid, .m_rdata,
+	.m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_waitn, .m_rvalid, .m_rready, .m_rdata,
 	.m_be_hi(m_be_hi), .m_wdata_hi(m_wdata_hi), .m_rdata_hi(m_rdata_hi),
 	.DDRAM_BUSY(DDRAM_BUSY || ldr_active), .DDRAM_BURSTCNT(h_burstcnt), .DDRAM_ADDR(h_addr), .DDRAM_DOUT,
 	.DDRAM_DOUT_READY(DDRAM_DOUT_READY && !ldr_active), .DDRAM_RD(h_rd),
@@ -462,11 +478,33 @@ assign CE_PIXEL  = vid_ce;
 assign VGA_DE = !(vid_hb || vid_vb);
 assign VGA_HS = vid_hs;
 assign VGA_VS = vid_vs;
-assign VGA_R  = vid_r;
-assign VGA_G  = vid_g;
-assign VGA_B  = vid_b;
+// Slowdown indicator (OSD): a yellow 8x8 square in the top-right corner for 30 frames after a buffer
+// swap that came two to fifteen frames after the one before (the game below 60 frames a second; a
+// screen held longer is not counted), or a tilemap line not built when shown
+logic       vb_q;
+logic [1:0] disp_q;
+logic [3:0] f_since;                   // frames since the last swap, saturating
+logic [4:0] ind_t;                     // frames the square stays
+always_ff @(posedge clk_sys) begin
+	vb_q <= vblank;
+	disp_q <= v_displayed;
+	if (vblank && !vb_q) begin
+		if (f_since != 4'hF) f_since <= f_since + 1'd1;
+		if (ind_t != 0) ind_t <= ind_t - 1'd1;
+	end
+	if (v_displayed != disp_q) begin
+		f_since <= 4'd0;
+		if (f_since >= 4'd2 && f_since != 4'hF) ind_t <= 5'd30;
+	end
+	if (vid_overrun) ind_t <= 5'd30;
+end
+wire ind_on = status[8] && ind_t != 0 && vid_x >= 10'd504 && vid_x < 10'd512 && vid_y < 10'd8;
 
-// the sound board on the HPS (sw/arcsnd) as master 7: the PPC's K056800 and SNDRES writes out,
+assign VGA_R  = ind_on ? 8'hFF : vid_r;
+assign VGA_G  = ind_on ? 8'hFF : vid_g;
+assign VGA_B  = ind_on ? 8'h00 : vid_b;
+
+// the sound board on the HPS (MiSTer_ArcadeSoundServer) as master 7: the PPC's K056800 and SNDRES writes out,
 // the server's replies in (hornet_sndbridge has the shared block's layout)
 assign m_burst[7] = 11'd2;
 assign {m_be[7], m_be_hi[7]} = 8'hFF;

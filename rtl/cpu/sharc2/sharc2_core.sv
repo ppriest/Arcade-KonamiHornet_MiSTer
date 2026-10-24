@@ -45,6 +45,7 @@ module sharc2_core #(
     output logic [31:0] ext_wdata,
     input  logic        ext_ack,
     input  logic [31:0] ext_rdata,
+    input  logic        ext_post,       // an external write asked for at this edge is taken next clock
 
     input  logic [2:0]  irq_in,
     input  logic [2:0]  irq_assert,
@@ -336,6 +337,10 @@ logic [31:0] x_c_mode1, x_c_astat;
 
 // DMA engine
 logic        e_busy, e_wait, e_start;
+logic        e_tcb_next;               // a TCB word's read issued in the clock the last arrives
+logic        e_rd_next;                // a transfer's next word's read issued with the last's ack
+logic        e_post_now, e_post_rd;    // a Voodoo write posted (done when asked for), the next read
+logic        eb_post;                  // eb_req holds a posted write, taken this clock
 logic [1:0]  e_ch;
 logic [3:0]  e_step;
 logic [2:0]  e_k;
@@ -803,9 +808,12 @@ function automatic logic [2:0] dma_reads(input logic [31:0] pmode);
     dma_reads = (pmode == 32'd1) ? 3'd2 : (pmode == 32'd4) ? 3'd6 : 3'd1;
 endfunction
 
+// the channel this clock: from e_ch on; without DMA_LOCK (the board) round, so that a word follows
+// the last without a clock finding no channel
 always_comb
     if (e_ch == 2'd0 && dma_status[6])      e_sel = 2'd0;
     else if (e_ch <= 2'd1 && dma_status[7]) e_sel = 2'd1;
+    else if (!DMA_LOCK && !serial && e_ch == 2'd1 && dma_status[6]) e_sel = 2'd0;
     else                                    e_sel = 2'd2;
 
 function automatic logic [3:0] e_eff_step(input logic ch, input logic [3:0] stp);
@@ -1608,9 +1616,38 @@ assign e_start = !e_busy && run && !booting &&
                   (Q.idle && dma_status[7:6] != 0 && !(x_valid && xph != XS_EXEC)) ||
                   (!DMA_LOCK && !serial && dma_status[7:6] != 0));
 
+// without DMA_LOCK a TCB's words are read back to back: the next word's read goes out in the clock
+// a word arrives
+wire [31:0] e_tcb_a = e_addr(e_ch[0], e_step + 4'd1);
+assign e_tcb_next = !DMA_LOCK && !serial && e_busy && e_wait && e_step >= 4'd2 && e_step < 4'd9 &&
+                    is_dm1(e_tcb_a) && !x_portb;
+// ... and a transfer's next source word from data memory is read in the clock its last word's
+// external write is acknowledged, when no other channel is active and words remain
+wire [31:0] e_nx_a = op_src[e_ch[0]] + op_src_mod[e_ch[0]];
+assign e_rd_next = !DMA_LOCK && !serial && e_busy && e_wait && e_step == 4'd1 && eb_req && ext_ack &&
+                   !op_tcb[e_ch[0]] && dma_reads(op_pmode[e_ch[0]]) == 3'd1 &&
+                   $signed(op_src_count[e_ch[0]] - 32'd1) > 0 && !dma_status[{2'b11, !e_ch[0]}] &&
+                   is_dm1(e_nx_a) && !x_portb;
+// ... and a data-memory to Voodoo word's write is posted when the board will take it next clock
+// (ext_post): the word ends as it is asked for, and the next is read at once
+wire [31:0] e_pd = op_dst[e_ch[0]];
+assign e_post_now = !DMA_LOCK && !serial && e_busy && e_wait && e_step == 4'd0 && is_dm1(e_addr(e_ch[0], 4'd0)) &&
+                    e_pd >= 32'h0240_0000 && e_pd < 32'h0280_0000 && !op_tcb[e_ch[0]] &&
+                    dma_reads(op_pmode[e_ch[0]]) == 3'd1 && ext_post && !xb_req;
+assign e_post_rd = e_post_now && $signed(op_src_count[e_ch[0]] - 32'd1) > 0 && !dma_status[{2'b11, !e_ch[0]}] &&
+                   is_dm1(e_nx_a) && !x_portb;
+
 always_comb begin
     e_portb_do = 1'b0; e_portb_we = 1'b0; e_portb_a = 15'h0; e_portb_wd = 32'h0;
     e_do = 1'b0;
+    if (e_tcb_next) begin
+        e_portb_do = 1'b1;
+        e_portb_a = 15'(e_tcb_a - 32'h28000);
+    end
+    if (e_rd_next || e_post_rd) begin
+        e_portb_do = 1'b1;
+        e_portb_a = 15'(e_nx_a - 32'h28000);
+    end
     if (e_busy && !e_wait && e_sel != 2'd2) begin
         if (is_dm1(e_ad)) begin
             e_portb_do = !x_portb;
@@ -1618,7 +1655,7 @@ always_comb begin
             e_portb_a = 15'(e_ad - 32'h28000);
             e_portb_we = e_stp == 4'd1;
             e_portb_wd = e_data;
-        end else if (e_ad >= 32'h100 && !is_pm(e_ad)) e_do = !xb_req;
+        end else if (e_ad >= 32'h100 && !is_pm(e_ad)) e_do = !xb_req && !eb_post;
         else e_do = 1'b1;
     end
 end
@@ -1632,9 +1669,10 @@ always_comb begin
     ad = e_addr(ch, e_step);
     rds = dma_reads(op_pmode[ch]);
     if (e_wr_now) begin ch = e_sel[0]; rds = dma_reads(op_pmode[ch]); end
+    if (e_post_now) begin ch = e_ch[0]; rds = 3'd1; end
     if (ce && run && !booting &&
         ((e_busy && e_wait && e_step == 4'd1 &&
-          (is_dm1(ad) || !(ad >= 32'h100 && !is_pm(ad)) || (ext_ack && eb_req))) || e_wr_now) &&
+          (is_dm1(ad) || !(ad >= 32'h100 && !is_pm(ad)) || (ext_ack && eb_req))) || e_wr_now || e_post_now) &&
         $signed(op_src_count[ch] - {29'h0, rds}) <= 0 && (!op_chained[ch] || op_chain_ptr[ch][17]))
         e_irq_set[16 + ch] = 1'b1;
 end
@@ -1651,7 +1689,7 @@ task automatic e_advance(input logic ch);
     op_dst[ch] <= op_dst[ch] + op_dst_mod[ch];
     op_src_count[ch] <= op_src_count[ch] - {29'h0, rds};
     e_k <= 3'd0;
-    e_ch <= {1'b0, ch} + 2'd1; e_step <= 4'd0;
+    e_ch <= (!DMA_LOCK && !serial && ch) ? 2'd0 : {1'b0, ch} + 2'd1; e_step <= 4'd0;
     if ($signed(op_src_count[ch] - {29'h0, rds}) <= 0) begin
         dma_status[6 + ch] <= 1'b0;
         op_active[ch] <= 1'b0;
@@ -1668,8 +1706,9 @@ wire e_wr_now = e_busy && !e_wait && e_sel != 2'd2 && e_do && e_stp == 4'd1 && (
 always_ff @(posedge clk) begin
     e_pmw <= 1'b0;
     if (reset) begin
-        e_busy <= 1'b0; e_wait <= 1'b0; eb_req <= 1'b0;
+        e_busy <= 1'b0; e_wait <= 1'b0; eb_req <= 1'b0; eb_post <= 1'b0;
     end else if (ce && run && !booting) begin
+        if (eb_post && ext_ack) begin eb_req <= 1'b0; eb_post <= 1'b0; end
         if (x_go && c.dma_exec) begin
             // sharc_dma_exec (sharcdma.hxx:262-321)
             logic ch, chen, xmit, dtype;
@@ -1744,8 +1783,26 @@ always_ff @(posedge clk) begin
                     else w = {16'h0, d};
                     e_pack <= w;
                     if (e_k + 3'd1 < dma_reads(pmo)) e_k <= e_k + 3'd1;
-                    else begin e_data <= w[31:0]; e_step <= 4'd1; end
-                end else if (e_step == 4'd1) e_advance(ch);
+                    else begin
+                        e_data <= w[31:0]; e_step <= 4'd1;
+                        // without DMA_LOCK an external destination's write is asked for in the
+                        // clock the word is read, not the clock after
+                        if (!DMA_LOCK && !serial && !is_dm1(op_dst[ch]) && op_dst[ch] >= 32'h100 &&
+                            !is_pm(op_dst[ch]) && !xb_req && !op_tcb[ch]) begin
+                            eb_req <= 1'b1; eb_we <= 1'b1; eb_addr <= op_dst[ch]; eb_wdata <= w[31:0];
+                            e_wait <= 1'b1;
+                            // ... and a Voodoo write the board will take next clock is the word's end
+                            if (e_post_now) begin
+                                e_advance(ch);
+                                eb_post <= 1'b1; e_wait <= 1'b0;
+                                if (e_post_rd) begin e_ch <= {1'b0, ch}; e_step <= 4'd0; e_k <= 3'd0; e_wait <= 1'b1; end
+                            end
+                        end
+                    end
+                end else if (e_step == 4'd1) begin
+                    e_advance(ch);
+                    if (e_rd_next) begin e_ch <= {1'b0, ch}; e_step <= 4'd0; e_k <= 3'd0; e_wait <= 1'b1; end
+                end
                 else begin
                     tcb[e_step - 4'd2] <= d;
                     if (e_step == 4'd9) begin
@@ -1765,8 +1822,11 @@ always_ff @(posedge clk) begin
                         op_chained[ch] <= 1'b1;
                         op_active[ch] <= 1'b1;
                         dma_status[6 + ch] <= 1'b1;
-                        e_ch <= e_ch + 2'd1; e_step <= 4'd0;
-                    end else e_step <= e_step + 4'd1;
+                        e_ch <= (!DMA_LOCK && !serial) ? {1'b0, ch} : e_ch + 2'd1; e_step <= 4'd0;
+                    end else begin
+                        e_step <= e_step + 4'd1;
+                        if (e_tcb_next) e_wait <= 1'b1;          // the next word's read is out
+                    end
                 end
             end
         end
@@ -1964,5 +2024,16 @@ task automatic dbg_write_dma(input logic [7:0] sel, input logic [5:0] idx, input
     default: ;
     endcase
 endtask
+
+// synthesis translate_off
+// benches: +dmalog prints each DMA start and the words each channel moves a quantum (board_tb)
+always_ff @(posedge clk)
+    if ($test$plusargs("dmalog") && ce && run && !booting && x_go && c.dma_exec)
+        $display("SHARC DMA ch %0d: %s ext %08X mod %0d count %0d, int %05X mod %0d count %0d, ctl %08X", 6 + c.dma_exec_ch,
+                 c.s.dma_control[c.dma_exec_ch][2] ? "to ext" : "from ext", c.s.dma_ext_index[c.dma_exec_ch],
+                 $signed(c.s.dma_ext_modifier[c.dma_exec_ch]), c.s.dma_ext_count[c.dma_exec_ch],
+                 c.s.dma_int_index[c.dma_exec_ch], $signed(c.s.dma_int_modifier[c.dma_exec_ch]),
+                 c.s.dma_int_count[c.dma_exec_ch], c.s.dma_control[c.dma_exec_ch]);
+// synthesis translate_on
 
 endmodule

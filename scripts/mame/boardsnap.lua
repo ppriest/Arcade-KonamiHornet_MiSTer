@@ -15,12 +15,15 @@
 --   fb.bin           the Voodoo's 2 MB frame buffer
 --   screen.bin       MAME's composed screen, 32-bit ARGB, visible_width x visible_height
 --
---   CORE_OUT, CORE_FRAME, CORE_FRAMES, CORE_EVENTS ("frame:port:mask:len,...")
+--   CORE_OUT, CORE_FRAME, CORE_FRAMES, CORE_EVENTS ("frame:port:mask:len,..."),
+--   CORE_POKES ("from:addr:value,...": a byte written to the main CPU's space every frame from
+--   frame <from> until the dump, as a MAME cheat's run script; hex address and value)
 
 local out    = os.getenv("CORE_OUT")
 local frame  = tonumber(os.getenv("CORE_FRAME") or "7500")
 local frames = tonumber(os.getenv("CORE_FRAMES") or "4")
 local events = os.getenv("CORE_EVENTS") or ""
+local pokes  = os.getenv("CORE_POKES") or ""
 
 local m      = manager.machine
 local screen = m.screens[":screen"]
@@ -33,6 +36,12 @@ local pressed, held = {}, {}
 for f, port, mask, len in events:gmatch("(%d+):(%w+):(%x+):(%d+)") do
     pressed[#pressed + 1] = { f = tonumber(f), port = ":" .. port, mask = tonumber(mask, 16), len = tonumber(len) }
 end
+
+local poke = {}
+for f, a, v in pokes:gmatch("(%d+):(%x+):(%x+)") do
+    poke[#poke + 1] = { f = tonumber(f), a = tonumber(a, 16), v = tonumber(v, 16) }
+end
+local prog = m.devices[":maincpu"].spaces["program"]
 
 local function mkdir(d)
     os.execute('mkdir "' .. d:gsub("/", "\\") .. '" 2>nul')
@@ -140,6 +149,11 @@ boardsnap_subs[#boardsnap_subs + 1] = emu.add_machine_frame_notifier(function()
     for _, p in ipairs(pressed) do
         if f == p.f then m.ioport.ports[p.port]:field(p.mask):set_value(1); held[p] = f + p.len end
         if held[p] and f >= held[p] then m.ioport.ports[p.port]:field(p.mask):set_value(0); held[p] = nil end
+    end
+    if state == 0 then
+        for _, p in ipairs(poke) do
+            if f >= p.f then prog:write_u8(p.a, p.v) end
+        end
     end
     if state == 0 and f >= frame then
         state = 1                   -- before the dump: an error must not repeat it every frame

@@ -6,10 +6,12 @@
 
 The index-0 image is KonamiHornet.sv's download layout: program ROM (4 MB), data ROM (8 MB),
 CG ROM (16 MB), M48T58 (8 KB), then the sound board's 68000 program (512 KB) and samples as
-stored, which the HPS's sound server (sw/arcsnd) reads from DDR3 after the fast load. The script
+stored, which the HPS's sound server (MiSTer_ArcadeSoundServer) reads from DDR3 after the fast load. The script
 builds that image from the .mra with scripts/mra.py (mra-tools-c's semantics) and compares it byte
 for byte with scripts/rom_images.py's images and the set's files; it writes nothing if they
-differ. <mameversion> comes from MAME_EXE.
+differ. <mameversion> comes from MAME_EXE. A clone (SETS "parent") is its parent's entry with its
+own files and names; its .mra goes to releases/_alternatives/_<game>/ and names its zip and then
+the parent's (zip="clone.zip|parent.zip"), whose merged form keeps the clone's files under "<clone>/".
 """
 import re
 import subprocess
@@ -23,6 +25,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from mame_capture import load_env  # noqa: E402
 import mra  # noqa: E402
+import rom_images  # noqa: E402
 
 MB = 1024 * 1024
 # prg: ROM_LOAD16_WORD_SWAP, loaded twice; data and cg: ROM_LOAD32_WORD_SWAP pairs, zeros to the
@@ -43,7 +46,19 @@ SETS = {
         dip1='\n        <dip name="Cabinet Type" bits="1" ids="4 Player,2 Player"/>',
         note=("\n    <!-- Untested on the core: the security EEPROM (X76F041) and the JVS I/O board are not\n"
               "         emulated; MAME says the game is regionless and bugged without the first -->")),
+    # Gradius IV's clones (MAME 0.289 -listclones gradius4): program ROM, NVRAM image, names
+    "gradius4a": dict(parent="gradius4", desc="Gradius IV (ver AAC)", file="Gradius IV (ver AAC)",
+                      prg="837c01.27p", nv="m48t58y-70pc1_aac"),
+    "gradius4u": dict(parent="gradius4", desc="Gradius IV (ver UAC)", file="Gradius IV (ver UAC)",
+                      prg="837c01.27p", nv="m48t58y-70pc1_uac"),
+    "gradius4aa": dict(parent="gradius4", desc="Gradius IV (ver AAA)", file="Gradius IV (ver AAA)",
+                       prg="837a01.27p", nv="m48t58y-70pc1_aaa"),
+    "gradius4ja": dict(parent="gradius4", desc="Gradius IV: Fukkatsu (ver JAA)",
+                       file="Gradius IV Fukkatsu (ver JAA)", prg="837a01.27p", nv="m48t58y-70pc1_jaa"),
+    "gradius4ua": dict(parent="gradius4", desc="Gradius IV (ver UAA)", file="Gradius IV (ver UAA)",
+                       prg="837a01.27p", nv="m48t58y-70pc1_uaa"),
 }
+ALT_DIR = {"gradius4": "_Gradius IV"}       # a parent's clones' folder under releases/_alternatives
 
 
 CHEAT_MAX = 16                          # KonamiHornet.sv's store: 16 codes
@@ -122,17 +137,16 @@ def cheats_block(cheats):
     return "\n" + "\n".join(lines) + "\n"
 
 
-def crc(z, name):
-    return f"{z.getinfo(name).CRC:08x}"
-
-
 def write(setname, s, romdir, mamever, mame_dir):
-    zpath = romdir / f"{setname}.zip"
-    z = zipfile.ZipFile(zpath)
+    parent = s.get("parent")
+    if parent:
+        s = {**SETS[parent], **s}
+    z = rom_images.SetZips(romdir, setname)
+    zips = f"{setname}.zip|{parent}.zip" if parent else f"{setname}.zip"
 
     def part(name, m=None):
         a = f' map="{m}"' if m else ""
-        return f'<part name="{name}" crc="{crc(z, name)}"{a}/>'
+        return f'<part name="{name}" crc="{z.crc(name)}"{a}/>'
 
     def pair(hi, lo):
         return ("        <interleave output=\"32\">\n"
@@ -141,10 +155,10 @@ def write(setname, s, romdir, mamever, mame_dir):
 
     prg = ("        <interleave output=\"16\">\n"
            f"            {part(s['prg'], '12')}\n        </interleave>\n")
-    data_pad = 8 * MB - 2 * z.getinfo(s["data"][0]).file_size
+    data_pad = 8 * MB - 2 * z.size(s["data"][0])
     pad = f'        <part repeat="{data_pad:#x}">00</part>\n' if data_pad else ""
     smp = "".join(f"        {part(f)}\n" for f in s["snd_smp"])
-    smp_mb = sum(z.getinfo(f).file_size for f in s["snd_smp"]) // MB
+    smp_mb = sum(z.size(f) for f in s["snd_smp"]) // MB
     text = f"""<misterromdescription>
     <name>{s['desc']}</name>
     <setname>{setname}</setname>
@@ -159,13 +173,13 @@ def write(setname, s, romdir, mamever, mame_dir):
          data ROM 8 MB, CG ROM 16 MB, M48T58 8 KB; then the sound board's 68000 program (512 KB)
          and samples ({smp_mb} MB) as stored, which the HPS's sound server reads from DDR3 (the
          fast load); written and checked by scripts/gen_mra.py -->
-    <rom index="0" zip="{setname}.zip" md5="none" address="0x30000000">
+    <rom index="0" zip="{zips}" md5="none" address="0x30000000">
         <!-- program ROM: ROM_LOAD16_WORD_SWAP, reloaded -->
 {prg}{prg}        <!-- data ROM: ROM_LOAD32_WORD_SWAP, the first in bytes 0-1, the second in bytes 2-3 -->
 {pair(*s['data'])}{pad}        <!-- CG ROM: ROM_LOAD32_WORD_SWAP pairs, the second at 8 MB -->
 {''.join(pair(h, l) for h, l in s['cg'])}        <!-- M48T58: the set's NVRAM image -->
         {part(s['nv'])}
-        <!-- the sound board (sw/arcsnd): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         {part(s['snd_prg'])}
 {smp}    </rom>
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
@@ -182,8 +196,8 @@ def write(setname, s, romdir, mamever, mame_dir):
     <buttons names="{s['buttons']},Start,Coin,Service,Test" default="A,B,X,Start,Select,R,L"/>
 </misterromdescription>
 """
-    out = REPO / "releases" / f"{s['file']}.mra"
-    out.parent.mkdir(exist_ok=True)
+    out = REPO / "releases" / (Path("_alternatives") / ALT_DIR[parent] if parent else Path()) / f"{s['file']}.mra"
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(text)
 
@@ -194,7 +208,7 @@ def write(setname, s, romdir, mamever, mame_dir):
     ref = ((rd / "prgrom.bin").read_bytes() + (rd / "datarom.bin").read_bytes() +
            (rd / "cgrom.bin").read_bytes() + z.read(s["nv"]) + z.read(s["snd_prg"]) +
            b"".join(z.read(f) for f in s["snd_smp"]))
-    img = mra.build_image(str(tmp), str(zpath))
+    img = mra.build_image(str(tmp), [str(p) for p in z.paths])
     if img != ref:
         n = next((i for i in range(min(len(img), len(ref))) if img[i] != ref[i]), min(len(img), len(ref)))
         tmp.unlink()

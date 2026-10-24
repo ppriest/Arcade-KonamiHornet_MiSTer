@@ -88,6 +88,10 @@ module hornet_board #(
     output logic [31:0] v_fbw_wdata_hi, v_fbcw_wdata_hi, v_fbaw_wdata_hi, v_mf_wdata_hi,
     output logic [3:0]  v_fbw_be_hi, v_fbcw_be_hi, v_fbaw_be_hi, v_mf_be_hi,
     input  logic [31:0] v_fbcr_rdata_hi, v_fbar_rdata_hi, v_mf_rdata_hi,
+    output logic        v_fbcr_rready, v_fbar_rready, v_tex_rready,  // read data may come the next clock
+    input  logic [31:0] v_tex_rdata_hi,
+    output logic [31:0] v_tex_wdata_hi,
+    output logic [3:0]  v_tex_be_hi,
     input  logic        v_fbw_rvalid, v_fbcw_rvalid, v_fbaw_rvalid, v_fbcr_rvalid, v_fbar_rvalid, v_tex_rvalid,
     input  logic [31:0] v_fbw_rdata, v_fbcw_rdata, v_fbaw_rdata, v_fbcr_rdata, v_fbar_rdata, v_tex_rdata,
     // ... and its memory FIFO's ring (vraster io_memFifo)
@@ -606,6 +610,7 @@ logic [31:0] x_addr, x_wdata, x_rdata;
 
 // ---------------------------------------------------------------- the SHARC's clock domain
 logic        dx_req /*verilator public_flat_rd*/, dx_we /*verilator public_flat_rd*/, dx_ack /*verilator public_flat_rd*/;
+logic        dx_post;                 // the SHARC's external write next clock is taken then
 logic [31:0] dx_addr, dx_wdata, dx_rdata;
 logic        dsp_reset, dsp_ce, dsp_ce1, dsp_boot, sh_bank_d;
 logic [1:0]  dsp_irq;
@@ -622,7 +627,7 @@ hornet_pulse u_sirq1 (.clk_a(clk), .a(dsp_irq_assert[1]), .clk_b(clk_dsp), .b(ds
 sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0)) dsp (     // gradius4 uses below 0x2A800 (docs/HACKS.md)
     .clk(clk_dsp), .reset(dsp_reset), .ce(dsp_ce), .boot(dsp_boot), .serial(1'b0),
     .ext_req(dx_req), .ext_we(dx_we), .ext_addr(dx_addr), .ext_wdata(dx_wdata),
-    .ext_ack(dx_ack), .ext_rdata(dx_rdata),
+    .ext_ack(dx_ack), .ext_rdata(dx_rdata), .ext_post(dx_post),
     .irq_in(3'b0), .irq_assert({1'b0, dsp_irq}), .irq_check_en(1'b1), .dbg_irq_set(32'h0),
     .dbg_iop_ovr(1'b0), .dbg_iop_val(32'h0),
     .dbg_exec(dsp_dbg_exec), .dbg_pc(dsp_dbg_pc), .dbg_op(dsp_dbg_op), .dbg_sel(dsp_dbg_sel),
@@ -649,14 +654,17 @@ assign shs_we    = dsp_ce && dx_req && dx_we && dx_sh && !sh_ph;
 // (it may switch the CG ROM bank) drops both.
 typedef enum logic [1:0] { DB_IDLE, DB_RD, DB_RDY } db_t;
 db_t         dbs;
-logic        cq_full, cq_empty, cq_pop, cq_push;
+logic        cq_full, cq_empty, cq_pop, cq_push, cq_room2;
+// a write the SHARC asks for next clock is taken then (posted DMA writes): two free in the queue and
+// no single read under way
+assign       dx_post = cq_room2 && dbs == DB_IDLE;
 logic [58:0] cq_head, cq_in;
 logic        cr_t, cr_new;
 logic [31:0] cr_data, cr_dsp;
 logic        rq_full, rq_empty, rq_pop, rq_push;
 logic [31:0] rq_head;
 hornet_afifo #(.AW(3), .DW(59)) u_cq (
-    .clk_w(clk_dsp), .rst_w(dsp_reset), .w_push(cq_push), .w_data(cq_in), .w_full(cq_full),
+    .clk_w(clk_dsp), .rst_w(dsp_reset), .w_push(cq_push), .w_data(cq_in), .w_full(cq_full), .w_room2(cq_room2),
     .clk_r(clk), .rst_r(reset), .r_pop(cq_pop), .r_data(cq_head), .r_empty(cq_empty));
 hornet_afifo #(.AW(4), .DW(32)) u_rq (
     .clk_w(clk), .rst_w(reset), .w_push(rq_push), .w_data(x_rdata), .w_full(rq_full),
@@ -1005,17 +1013,18 @@ vraster #(.RECIP_HEX(RECIP_HEX)) voodoo (
     .io_memFbColorRead_waitRequestn(v_fbcr_waitn), .io_memFbColorRead_address(v_fbcr_addr),
     .io_memFbColorRead_burstCount(v_fbcr_burst), .io_memFbColorRead_byteEnable(v_fbcr_be),
     .io_memFbColorRead_writeData(v_fbcr_wdata), .io_memFbColorRead_readDataValid(v_fbcr_rvalid),
-    .io_memFbColorRead_readData(v_fbcr_rdata),
+    .io_memFbColorRead_readData(v_fbcr_rdata), .io_memFbColorRead_readReady(v_fbcr_rready),
     .io_memFbAuxRead_read(v_fbar_read), .io_memFbAuxRead_write(v_fbar_write),
     .io_memFbAuxRead_waitRequestn(v_fbar_waitn), .io_memFbAuxRead_address(v_fbar_addr),
     .io_memFbAuxRead_burstCount(v_fbar_burst), .io_memFbAuxRead_byteEnable(v_fbar_be),
     .io_memFbAuxRead_writeData(v_fbar_wdata), .io_memFbAuxRead_readDataValid(v_fbar_rvalid),
-    .io_memFbAuxRead_readData(v_fbar_rdata),
+    .io_memFbAuxRead_readData(v_fbar_rdata), .io_memFbAuxRead_readReady(v_fbar_rready),
     .io_memTex_read(v_tex_read), .io_memTex_write(v_tex_write),
     .io_memTex_waitRequestn(v_tex_waitn), .io_memTex_address(v_tex_addr),
     .io_memTex_burstCount(v_tex_burst), .io_memTex_byteEnable(v_tex_be),
     .io_memTex_writeData(v_tex_wdata), .io_memTex_readDataValid(v_tex_rvalid),
-    .io_memTex_readData(v_tex_rdata),
+    .io_memTex_readData(v_tex_rdata), .io_memTex_readDataHi(v_tex_rdata_hi), .io_memTex_readReady(v_tex_rready),
+    .io_memTex_writeDataHi(v_tex_wdata_hi), .io_memTex_byteEnableHi(v_tex_be_hi),
     .io_memFifo_read(v_mf_read), .io_memFifo_write(v_mf_write), .io_memFifo_waitRequestn(v_mf_waitn),
     .io_memFifo_address(v_mf_addr), .io_memFifo_burstCount(v_mf_burst), .io_memFifo_byteEnable(v_mf_be),
     .io_memFifo_writeData(v_mf_wdata), .io_memFifo_writeDataHi(v_mf_wdata_hi), .io_memFifo_byteEnableHi(v_mf_be_hi),

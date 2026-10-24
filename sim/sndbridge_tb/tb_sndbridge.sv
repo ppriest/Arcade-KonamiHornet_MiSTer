@@ -44,7 +44,7 @@ hornet_ddr3 #(.N(2), .WIDE(2'b10)) ddr3 (
     .clk, .reset, .drain(1'b0), .idle(),
     .m_read({b_read, 1'b0}), .m_write({b_write, 1'b0}), .m_addr({b_addr, 32'h0}), .m_burst({b_burst, 11'd0}),
     .m_be({4'hF, 4'h0}), .m_wdata({b_wdata[31:0], 32'h0}), .m_be_hi({4'hF, 4'h0}), .m_wdata_hi({b_wdata[63:32], 32'h0}),
-    .m_waitn, .m_rvalid, .m_rdata, .m_rdata_hi,
+    .m_waitn, .m_rvalid, .m_rready(2'b11), .m_rdata, .m_rdata_hi,
     .DDRAM_BUSY, .DDRAM_BURSTCNT, .DDRAM_ADDR, .DDRAM_DOUT, .DDRAM_DOUT_READY, .DDRAM_RD,
     .DDRAM_DIN, .DDRAM_BE, .DDRAM_WE, .dbg(), .dbg_cmd()
 );

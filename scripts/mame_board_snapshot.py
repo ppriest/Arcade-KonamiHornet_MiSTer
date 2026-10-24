@@ -4,7 +4,7 @@
 sim/board_tb.
 
     python scripts/mame_board_snapshot.py gradius4 --frame 7500 [--frames 4] [--nvram debug/nvram]
-        [--events 4400:IN2:80:5,4430:IN0:80:5]
+        [--events 4400:IN2:80:5,4430:IN0:80:5] [--pokes 700:8021708B:18,4431:4930:9]
     -> debug/<set>-board<frame>/{start/, f1/ .. f<frames>/}
 
 The layout of start/ and f<n>/ is in scripts/mame/boardsnap.lua.
@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--frames", type=int, default=4)
     ap.add_argument("--nvram", default=str(REPO / "debug" / "nvram"))
     ap.add_argument("--events", default="")
+    ap.add_argument("--pokes", default="", help="from:addr:value,... bytes written every frame (cheats)")
     a = ap.parse_args()
 
     mame_dir, exe = mame_paths()
@@ -39,7 +40,7 @@ def main():
     if Path(a.nvram).exists():
         shutil.copytree(Path(a.nvram), out / "nvram")
     env = dict(os.environ, CORE_OUT=out.as_posix(), CORE_FRAME=str(a.frame), CORE_FRAMES=str(a.frames),
-               CORE_EVENTS=a.events, CORE_SCRIPT=str(REPO / "scripts" / "mame" / "boardsnap.lua"))
+               CORE_EVENTS=a.events, CORE_POKES=a.pokes, CORE_SCRIPT=str(REPO / "scripts" / "mame" / "boardsnap.lua"))
     cmd = mame_cmd(exe, a.game, None, mame_dir,
                    ["-nodrc", "-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg"),
                     "-seconds_to_run", str(a.frame // 50 + a.frames + 60)])

@@ -16,7 +16,8 @@
 //   writes  the granted master keeps the port for its burst; its words are packed in pairs, an odd
 //           first or last word with the other half's byte enables off.
 //   order   master N-1 (the picture) first, then the others in turn, a command or a write burst at
-//           a time; the choice is registered (A_IDLE) a clock before the command goes (A_CMD).
+//           a time; the choice is registered (A_IDLE, or the last clock of the command before) a
+//           clock before the command goes (A_CMD).
 
 module hornet_ddr3 #(
     parameter int N    = 7,
@@ -43,6 +44,9 @@ module hornet_ddr3 #(
     input  logic [N-1:0][31:0]   m_wdata_hi,
     output logic [N-1:0]         m_waitn,
     output logic [N-1:0]         m_rvalid,
+    // a master may hold its read data back: low, the master's next word waits in the FIFO (and the
+    // words behind it with it); it is taken the clock after the word goes, so it means "next clock"
+    input  logic [N-1:0]         m_rready,
     output logic [31:0]          m_rdata,
     output logic [31:0]          m_rdata_hi,
 
@@ -85,7 +89,7 @@ wire            rf_empty = rf_wp == rf_rp;
 // the words out: a narrow master's one a clock, a wide master's two (the whole beat); the beat
 // leaves with its high half, the tag's last word, or at once for a wide master. rf_q is the RAM's
 // registered output; it reads ahead to the next beat when one leaves, so beats go out back to back
-wire out_now  = t_on && rf_qv;
+wire out_now  = t_on && rf_qv && (m_rready[t_cur.m] || drain);   // drained words are dropped
 wire t_wide   = WIDE[t_cur.m];
 wire pop_beat = out_now && (t_wide || t_hi || t_left == 11'd1);
 wire [RAW:0] rf_nx = pop_beat ? rf_rp + 1'd1 : rf_rp;
@@ -142,19 +146,23 @@ function automatic logic [7:0] beats(input logic [31:0] a, input logic [10:0] n)
     return 8'((11'(a[2]) + n + 11'd1) >> 1);
 endfunction
 
-// the next master: N-1 first, then from rr round
+// the next master: N-1 first, then from rr round; not the master being served (its request is
+// the one ending)
 logic          pick_v;
 logic [MW-1:0] pick;
 always_comb begin
     logic found;
     logic [MW-1:0] k;
+    logic [N-1:0] req;
+    req = m_read | m_write;
+    if (as != A_IDLE) req[g] = 1'b0;
     found = 1'b0; k = '0;
-    if (m_read[N-1] || m_write[N-1]) begin found = 1'b1; k = MW'(N - 1); end
+    if (req[N-1]) begin found = 1'b1; k = MW'(N - 1); end
     for (int j = 0; j < N - 1; j++) begin
         logic [MW:0] i;
         i = (MW+1)'(rr) + (MW+1)'(j);
         if (i >= (MW+1)'(N - 1)) i = i - (MW+1)'(N - 1);
-        if (!found && (m_read[MW'(i)] || m_write[MW'(i)])) begin found = 1'b1; k = MW'(i); end
+        if (!found && req[MW'(i)]) begin found = 1'b1; k = MW'(i); end
     end
     pick_v = found; pick = k;
 end
@@ -171,16 +179,20 @@ always_comb begin
     if (as == A_WR && m_write[g] && w_left != 0 && (!w_out || !DDRAM_BUSY)) begin m_waitn[g] = 1'b1; w_take = 1'b1; end
 end
 
+// the command ends this clock: a read accepted, or a write burst's last beat leaving
+wire  c_end = (as == A_RD && !DDRAM_BUSY) || (as == A_WR && w_out && !DDRAM_BUSY && b_left == 8'd1);
+wire  take = (as == A_IDLE || c_end) && pick_v && !drain;
+
 always_ff @(posedge clk) begin
     if (as == A_RD && !DDRAM_BUSY) DDRAM_RD <= 1'b0;
     if (w_out && !DDRAM_BUSY) begin DDRAM_WE <= 1'b0; w_out <= 1'b0; b_left <= b_left - 8'd1; end
-    case (as)
-    A_IDLE: if (pick_v && !drain) begin
+    if (take) begin
         g <= pick;
         if (pick != MW'(N - 1)) rr <= (pick == MW'(N - 2)) ? '0 : pick + 1'd1;
         c_rd <= m_read[pick]; c_addr <= m_addr[pick]; c_burst <= m_burst[pick];
-        as <= A_CMD;
     end
+    case (as)
+    A_IDLE: if (take) as <= A_CMD;
     A_CMD:
         if (drain) as <= A_IDLE;                    // not on the port yet
         else if (c_rd) begin
@@ -201,7 +213,7 @@ always_ff @(posedge clk) begin
             w_lo <= 32'h0; w_lobe <= 4'h0;
             as <= A_WR;
         end
-    A_RD: if (!DDRAM_BUSY) as <= A_IDLE;
+    A_RD: if (!DDRAM_BUSY) as <= take ? A_CMD : A_IDLE;
     A_WR: begin
         if (w_take && WIDE[g]) begin
             w_left <= w_left - 11'd2;
@@ -222,7 +234,8 @@ always_ff @(posedge clk) begin
         if (drain && !w_take && b_left != 0 && (!w_out || !DDRAM_BUSY) && !(w_out && b_left == 8'd1)) begin
             DDRAM_WE <= 1'b1; w_out <= 1'b1; DDRAM_DIN <= 64'h0; DDRAM_BE <= 8'h0;
         end
-        if (b_left == 0 && !w_out) as <= A_IDLE;
+        if (c_end) as <= take ? A_CMD : A_IDLE;
+        else if (b_left == 0 && !w_out) as <= A_IDLE;
     end
     default: as <= A_IDLE;
     endcase
@@ -231,13 +244,13 @@ end
 
 // synthesis translate_off
 always_ff @(posedge clk)
-    if (as == A_IDLE && pick_v && (m_read[pick] || m_write[pick]) && m_burst[pick] > 11'd509)
+    if (take && (m_read[pick] || m_write[pick]) && m_burst[pick] > 11'd509)
         $error("hornet_ddr3: master %0d burst of %0d words", pick, m_burst[pick]);
 always_ff @(posedge clk) begin
-    if (as == A_IDLE && pick_v && !drain && WIDE[pick] && (m_addr[pick][2] || m_burst[pick][0] || m_burst[pick] == 0))
+    if (take && WIDE[pick] && (m_addr[pick][2] || m_burst[pick][0] || m_burst[pick] == 0))
         $error("hornet_ddr3: wide master %0d %s at %08X of %0d words", pick, m_read[pick] ? "read" : "write",
                m_addr[pick], m_burst[pick]);
-    if (as == A_IDLE && pick_v && !drain && m_burst[pick] == 0)
+    if (take && m_burst[pick] == 0)
         $error("hornet_ddr3: master %0d burst of 0 words", pick);
     if (DDRAM_WE && !DDRAM_BUSY && (as != A_WR || b_left == 0))
         $error("hornet_ddr3: a write beat beyond the burst (master %0d)", g);
@@ -273,7 +286,7 @@ always_ff @(posedge clk) begin
     end
     if (reset) begin d_wp <= '0; d_rp <= '0; d_left <= '0; end
 end
-assign dbg = {d_lv, d_lat[10:0] | {11{d_lat[11]}}, as == A_IDLE && pick_v, 4'(pick), DDRAM_DOUT_READY, DDRAM_WE && !DDRAM_BUSY,
+assign dbg = {d_lv, d_lat[10:0] | {11{d_lat[11]}}, take, 4'(pick), DDRAM_DOUT_READY, DDRAM_WE && !DDRAM_BUSY,
               as == A_RD && !DDRAM_BUSY, as == A_CMD && c_rd && !rd_room, DDRAM_BUSY, as};
 
 // read beats outstanding: issued, less those taken from the FIFO

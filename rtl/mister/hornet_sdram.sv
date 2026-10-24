@@ -4,8 +4,9 @@
 // through Sorgelig's controller (rtl/mister/sdram, three fixed-priority ports) at clk_mem: clk, or
 // 2x clk from the same PLL (the core runs it at clk).
 //
-//   controller port 0  line fills, 8 words as two double reads: port A's and port C's caches, port
-//                      B's read-ahead (port A first: a miss stalls the PPC)
+//   controller port 0  line fills, 8 words as two double reads: port C's misses first (a tilemap
+//                      line has a deadline), then port B's read-ahead (the SHARC's streams set the
+//                      frame rate in busy scenes, and the PPC idles part of each frame), then port A's
 //   controller port 1  port A's queued writes, port B's writes
 //   controller port 2  the download (load time)
 //
@@ -262,7 +263,7 @@ always_ff @(posedge clk) begin
     fl_dv <= 1'b0; fl_end <= 1'b0;
     case (fl)
     FL_IDLE: if (go_c || go_a || go_b) begin
-        fl_c <= !go_a && go_c; fl_a <= go_a; fl_slot <= go_slot; fl_line <= go_line; fl_half <= go_half;
+        fl_c <= go_c; fl_a <= go_a && !go_b && !go_c; fl_slot <= go_slot; fl_line <= go_line; fl_half <= go_half;
         fl_stale <= 1'b0;
         m_addr0 <= {go_line, go_half, 3'b000};
         m_req0 <= !m_req0;
@@ -333,7 +334,7 @@ always_ff @(posedge clk) begin
     if (a_rhit) begin a_ack <= 1'b1; a_rdata <= aw_q[a_addr[1:0]]; end
     if (a_wgo) a_ack <= 1'b1;
     if (a_look && !a_we && !a_fill && !a_hit) a_fill <= 1'b1;
-    if (fl == FL_IDLE && go_a) begin a_fq <= 1'b1; a_fh <= 1'b0; end
+    if (fl == FL_IDLE && go_a && !go_b && !go_c) begin a_fq <= 1'b1; a_fh <= 1'b0; end
     if (a_fdv && !fl_end) begin
         a_val[fl_line[6:0]] <= 1'b0;
         a_fh <= 1'b1;
@@ -436,7 +437,7 @@ always_ff @(posedge clk) begin
     if (fl_dv && !fl_c && !fl_a) begin
         if (fl_keep) bv[fl_slot][fl_dh] <= 1'b1;
     end
-    if (fl == FL_IDLE && go_b && !go_c && !go_a) begin
+    if (fl == FL_IDLE && go_b && !go_c) begin
         bal[go_slot] <= 1'b1; bt[go_slot] <= 20'(go_line - B_LINE0); bv[go_slot] <= 2'b00;
     end
     if (b_take_wr) for (int s = 0; s < 2; s++) if (bt[s] == b_line) bal[s] <= 1'b0;
@@ -444,7 +445,8 @@ always_ff @(posedge clk) begin
 end
 
 // ------------------------------------------------------------------------------------------
-// the fill engine's next line: port C's miss, then port B's miss, then the line after port B's
+// the fill engine's next line: port C's miss, then port B's miss or the line after port B's, then
+// port A's miss
 // ------------------------------------------------------------------------------------------
 
 always_comb begin
@@ -454,8 +456,8 @@ always_comb begin
     go_c = c_miss;
     go_a = a_fill && !a_fq && a_drained && a_req;
     go_b = b_miss || b_next;
-    go_line = go_a ? {2'b00, a_addr[22:3]} : go_c ? c_line : B_LINE0 + {2'b00, b_miss ? b_line : b_nl};
-    go_half = go_a ? a_addr[2] : go_c ? c_addr[2] : b_miss ? br_addr[2] : 1'b0;
+    go_line = go_c ? c_line : go_b ? B_LINE0 + {2'b00, b_miss ? b_line : b_nl} : {2'b00, a_addr[22:3]};
+    go_half = go_c ? c_addr[2] : go_b ? (b_miss ? br_addr[2] : 1'b0) : a_addr[2];
     go_slot = b_miss ? !b_mru : !b_hs;
 end
 

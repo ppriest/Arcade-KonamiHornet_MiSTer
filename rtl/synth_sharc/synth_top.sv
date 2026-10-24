@@ -8,7 +8,7 @@ module synth_top (input logic clk, input logic din, output logic dout);
     logic [47:0] dbg_op;
     sharc2_core dsp (
         .clk, .reset(l[0] & l[1] & l[2]), .ce(1'b1), .boot(l[3] & l[4] & l[5] & l[6]), .serial(1'b0),
-        .ext_req, .ext_we, .ext_addr, .ext_wdata, .ext_ack(l[7]), .ext_rdata(l[39:8]),
+        .ext_req, .ext_we, .ext_addr, .ext_wdata, .ext_ack(l[7]), .ext_rdata(l[39:8]), .ext_post(l[40]),
         .irq_in(l[42:40]), .irq_assert(l[45:43]), .irq_check_en(1'b1), .dbg_irq_set(32'h0),
         .dbg_iop_ovr(1'b0), .dbg_iop_val(32'h0),
         .dbg_exec, .dbg_pc, .dbg_op, .dbg_sel(l[51:46]), .dbg_val, .dbg_idle,

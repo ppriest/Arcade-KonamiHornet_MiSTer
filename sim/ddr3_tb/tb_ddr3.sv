@@ -37,6 +37,11 @@ logic [23:0] dbg;
 logic        drain = 0, idle;
 logic [77:0] dbg_cmd;
 
+// +rdy=P: each master ready for its read data P percent of the clocks (m_rready)
+logic [N-1:0]       m_rready = '1;
+int rdy_pct = 100;
+always @(posedge clk) for (int k = 0; k < N; k++) m_rready[k] <= ($urandom % 100) < rdy_pct;
+
 hornet_ddr3 #(.N(N), .WIDE(WIDE)) dut (.*);
 
 int lat = 20, busy_pct = 20, nops = 300, seed = 1, errors = 0, mask = 127, wpct = 33;
@@ -162,6 +167,7 @@ initial begin
     if ($value$plusargs("lat=%d", lat)) ;
     if ($value$plusargs("busy=%d", busy_pct)) ;
     if ($value$plusargs("mask=%d", mask)) ;
+    if ($value$plusargs("rdy=%d", rdy_pct)) ;
     if ($value$plusargs("wpct=%d", wpct)) ;
     r = $urandom(seed);
     repeat (5) @(posedge clk);

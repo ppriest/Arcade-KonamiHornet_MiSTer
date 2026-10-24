@@ -15,6 +15,7 @@ local out    = os.getenv("CORE_OUT")
 local frame  = tonumber(os.getenv("CORE_FRAME") or "3000")
 local frames = tonumber(os.getenv("CORE_FRAMES") or "1")
 local events = os.getenv("CORE_EVENTS") or ""
+local pokes  = os.getenv("CORE_POKES") or ""       -- "from:addr:value,...": as boardsnap.lua's
 
 local m   = manager.machine
 local vd  = m.devices[":voodoo0"]
@@ -23,6 +24,11 @@ local ds  = m.devices[":dsp1"].spaces["data"]
 voodoowin_subs = {}
 voodoowin_err  = nil
 
+local poke = {}
+for f, a, v in pokes:gmatch("(%d+):(%x+):(%x+)") do
+    poke[#poke + 1] = { f = tonumber(f), a = tonumber(a, 16), v = tonumber(v, 16) }
+end
+local prog = m.devices[":maincpu"].spaces["program"]
 local pressed, held = {}, {}
 for f, port, mask, len in events:gmatch("(%d+):(%w+):(%x+):(%d+)") do
     pressed[#pressed + 1] = { f = tonumber(f), port = ":" .. port, mask = tonumber(mask, 16), len = tonumber(len) }
@@ -69,6 +75,11 @@ voodoowin_subs[#voodoowin_subs + 1] = emu.add_machine_frame_notifier(function()
     for _, p in ipairs(pressed) do
         if f == p.f then m.ioport.ports[p.port]:field(p.mask):set_value(1); held[p] = f + p.len end
         if held[p] and f >= held[p] then m.ioport.ports[p.port]:field(p.mask):set_value(0); held[p] = nil end
+    end
+    if state == 0 then
+        for _, p in ipairs(poke) do
+            if f >= p.f then prog:write_u8(p.a, p.v) end
+        end
     end
     if state == 0 and f >= frame then
         dump(out .. "/start")

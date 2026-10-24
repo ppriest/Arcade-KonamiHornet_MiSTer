@@ -149,6 +149,10 @@ struct AvPort {
     bool wide = false;
     IData *writeDataHi = nullptr, *readDataHi = nullptr;
     CData *byteEnableHi = nullptr;
+    // a master's readReady: read data comes only the clock after it was high
+    CData *readReady = nullptr;
+    bool rdy_q = true;
+    bool due() const { return !rq.empty() && rq.front().ready <= now && (!readReady || rdy_q); }
     struct Burst { uint32_t addr; int left; uint64_t ready; };
     std::deque<Burst> rq;
     uint64_t now = 0;
@@ -160,7 +164,7 @@ struct AvPort {
     void drive() {
         *waitRequestn = (int)rq.size() < g_memq && wstall == 0;
         *readDataValid = 0;
-        if (!rq.empty() && rq.front().ready <= now) {
+        if (due()) {
             uint8_t *p = mem_at(rq.front().addr);
             uint32_t d = 0;
             if (p) memcpy(&d, p, 4); else bad++;
@@ -174,7 +178,7 @@ struct AvPort {
         }
     }
     void edge() {
-        if (!rq.empty() && rq.front().ready <= now) {
+        if (due()) {
             rq.front().addr += wide ? 8 : 4;
             rq.front().left -= wide ? 2 : 1;
             if (rq.front().left <= 0) rq.pop_front();
@@ -202,6 +206,7 @@ struct AvPort {
             rq.push_back({*address + base, (int)*burstCount, now + 1 + g_memlat});
             nrd += *burstCount; nrq++;
         }
+        if (readReady) rdy_q = *readReady;
         now++;
     }
 };
@@ -292,6 +297,7 @@ int main(int argc, char **argv) {
     Ddr ddr;
     unsigned long long dd[14] = {0}, dc[8] = {0};
     bool tf_q = false;
+    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_hs[4] = {};
     if ((s = Verilated::commandArgsPlusMatch("ddrlat=")) && *s) ddr.lat = atoi(s + 8);
     if ((s = Verilated::commandArgsPlusMatch("ddrbusy=")) && *s) ddr.busy_pct = atoi(s + 9);
     // +ringoff: vraster's memory FIFO without its DDR3 ring (the stp revision's debug switch)
@@ -411,8 +417,10 @@ int main(int argc, char **argv) {
     vp[6].wide = true; vp[6].writeDataHi = &t->v_mf_wdata_hi; vp[6].byteEnableHi = &t->v_mf_be_hi; vp[6].readDataHi = &t->v_mf_rdata_hi;
     vp[1].wide = true; vp[1].writeDataHi = &t->v_fbcw_wdata_hi; vp[1].byteEnableHi = &t->v_fbcw_be_hi;
     vp[2].wide = true; vp[2].writeDataHi = &t->v_fbaw_wdata_hi; vp[2].byteEnableHi = &t->v_fbaw_be_hi;
-    vp[3].wide = true; vp[3].readDataHi = &t->v_fbcr_rdata_hi;
-    vp[4].wide = true; vp[4].readDataHi = &t->v_fbar_rdata_hi;
+    vp[3].wide = true; vp[3].readDataHi = &t->v_fbcr_rdata_hi; vp[3].readReady = &t->v_fbcr_rready;
+    vp[4].wide = true; vp[4].readDataHi = &t->v_fbar_rdata_hi; vp[4].readReady = &t->v_fbar_rready;
+    vp[5].wide = true; vp[5].readDataHi = &t->v_tex_rdata_hi; vp[5].readReady = &t->v_tex_rready;
+    vp[5].writeDataHi = &t->v_tex_wdata_hi; vp[5].byteEnableHi = &t->v_tex_be_hi;
     // port S, the picture's frame-buffer reads: the same model, its addresses frame-buffer offsets
     CData s_nowr = 0, s_be = 0xF; IData s_wd = 0;
     AvPort sp{&t->s_read, &s_nowr, &t->s_waitn, &t->s_rvalid, &t->s_addr, &s_wd, &t->s_rdata, &t->s_burst, &s_be};
@@ -470,7 +478,8 @@ int main(int argc, char **argv) {
     // by X's PC into <snap>/board_slow_pcs.txt
     bool dsp_prof_on = Verilated::commandArgsPlusMatch("dspprof")[0];
     uint64_t dprof[9] = {}, e_clk = 0, e_quanta = 0;   // ... and the DMA engine's busy clocks and quanta
-    std::map<uint32_t, uint64_t> dslow;
+    std::map<uint32_t, uint64_t> dslow, dempty, dldhz;
+    uint64_t dhz[5] = {}, ddma[7] = {}, dlb[5] = {};
     auto dsp_prof = [&]() {
         if (!dsp_prof_on) return;
         uint32_t s = t->rootp->tb_board__DOT__dut__DOT__dsp__DOT__dbg_prof;
@@ -486,6 +495,38 @@ int main(int argc, char **argv) {
         else if (!dv) k = 7;
         else k = 8;
         dprof[k]++;
+        // D's hazard clocks by cause (dbg_hz bits 0-4: X's late result, a multi-cycle wait, the slow unit busy,
+        // X's DAG write, a load's late result), and the bubbles (empty) by D's PC
+        if (dv && hz) {
+            unsigned h = t->rootp->tb_board__DOT__dut__DOT__dsp__DOT__dbg_hz;
+            if (h & 1) dhz[0]++; if (h & 2) dhz[1]++; if (h & 4) dhz[2]++; if (h & 8) dhz[3]++; if (h & 16) dhz[4]++;
+            if (h & 16) dldhz[t->rootp->tb_board__DOT__dut__DOT__dsp__DOT__dbg_xpc]++;   // the load in X
+        }
+        if (k == 8) dempty[t->rootp->tb_board__DOT__dut__DOT__dsp__DOT__d_pc]++;
+        // the SHARC's line buffer (port B reads): line fills (misses, prefetches), clocks a fill is
+        // under way, line-read requests waiting
+        {
+            auto *r = t->rootp;
+            if (r->tb_board__DOT__dut__DOT__miss_go) dlb[0]++;
+            if (r->tb_board__DOT__dut__DOT__pf_go) dlb[1]++;
+            if (r->tb_board__DOT__dut__DOT__f_any) dlb[2]++;
+            if (r->tb_board__DOT__dut__DOT__d_brd && !r->tb_board__DOT__dut__DOT__l_ack) dlb[3]++;
+            if (r->tb_board__DOT__dut__DOT__d_brd && !r->tb_board__DOT__dut__DOT__lhit) dlb[4]++;
+        }
+        // the DMA engine's busy clocks: external read or write waits (by region: the Voodoo, else),
+        // TCB loads, the rest; and its external accesses
+        if (eb) {
+            auto *r = t->rootp;
+            unsigned st = r->tb_board__DOT__dut__DOT__dsp__DOT__e_step;
+            bool w = r->tb_board__DOT__dut__DOT__dsp__DOT__e_wait, rq = r->tb_board__DOT__dut__DOT__dsp__DOT__eb_req;
+            uint32_t a = r->tb_board__DOT__dut__DOT__dsp__DOT__eb_addr;
+            static bool rq_q = false;
+            if (rq && !rq_q) ddma[(a >> 20) == 0x24 ? 4 : r->tb_board__DOT__dut__DOT__dsp__DOT__eb_we ? 5 : 6]++;
+            rq_q = rq;
+            if (w && rq) ddma[(a >> 20) == 0x24 ? 0 : 1]++;
+            else if (st >= 2) ddma[2]++;
+            else ddma[3]++;
+        }
         static bool eb_q = false;
         if (eb) { e_clk++; if (!eb_q) e_quanta++; }
         eb_q = eb;
@@ -794,6 +835,7 @@ int main(int argc, char **argv) {
 
     // ---------------------------------------------------------------- run
     t->run = 1;
+    uint64_t pbl[4] = {};
     uint64_t run0 = cyc, ppc_insns = 0, dsp_insns = 0, overruns = 0, v_wait = 0, v_writes = 0, d_idle = 0;
     // +pause=F,N: the pause input from frame F for N frames
     int pause_f = 1 << 30, pause_n = 0;
@@ -936,6 +978,15 @@ int main(int argc, char **argv) {
         }
         if (t->ev_v_wait) v_wait++;
         if (t->ev_dsp_idle) d_idle++;
+        // port B's line reads for the SHARC (clk_sys): clocks a line's request waits, words taken,
+        // lines, clocks a SHARC request waits in the crossing queue
+        {
+            auto *r = t->rootp;
+            bool cl = r->tb_board__DOT__dut__DOT__c_line, xr = r->tb_board__DOT__dut__DOT__x_req;
+            bool ack = sdram ? r->tb_board__DOT__sd_b_ack : t->b_ack;
+            if (xr && cl && t->b_req) { if (ack) { pbl[1]++; if (r->tb_board__DOT__dut__DOT__lk == 7) pbl[2]++; } else pbl[0]++; }
+            if (!r->tb_board__DOT__dut__DOT__cq_empty) pbl[3]++;
+        }
         // the SHARC waiting on its external bus (clk clocks), and how many of them on reads
         if (t->rootp->tb_board__DOT__dut__DOT__dx_req && !t->rootp->tb_board__DOT__dut__DOT__dx_ack) {
             dx_wait++;
@@ -958,9 +1009,47 @@ int main(int argc, char **argv) {
             if (g & 0x40) dd[8]++;                             // beats in
             if (g & (1u << 23)) { dd[9] += (g >> 12) & 0x7FF; dd[10]++; }
             // vraster: clocks a texture fill holds the pipeline, fills, clocks drawing triangles
-            if (t->v_dbg & 0x20) { dd[11]++; if (!tf_q) dd[12]++; }
+            if (t->v_dbg & 0x20) {
+                dd[11]++;
+                if (!tf_q) {
+                    dd[12]++;
+                    // +texstat: fills by texture format, and by 16-bit or 8-bit texels the clocks they hold
+                    tx_fmt[(t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__textureMode >> 8) & 15]++;
+                }
+                tx_hold[(t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__textureMode >> 11) & 1]++;
+            }
             tf_q = t->v_dbg & 0x20;
             if (((t->v_dbg >> 10) & 15) == 8) dd[13]++;
+            // +vprof: clocks by command state, by triangle state while drawing, and triangles
+            vp_cs[(t->v_dbg >> 10) & 15]++;
+            if (((t->v_dbg >> 10) & 15) == 8) vp_ts[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__ts & 15]++;
+            if (t->v_dbg & 0x8000) vp_tris++;
+            // ... the pipeline's clocks while drawing: issuing a pixel, held by a fill, its next set not
+            // ready, ready but its sibling's RAM busy
+            if (((t->v_dbg >> 10) & 15) == 8) {
+                auto *r = t->rootp;
+                unsigned ps = r->tb_board__DOT__dut__DOT__voodoo__DOT__px_set & 7;
+                if (r->tb_board__DOT__dut__DOT__voodoo__DOT__stall) vp_px[1]++;
+                else if (r->tb_board__DOT__dut__DOT__voodoo__DOT__px_run) vp_px[0]++;
+                else if ((r->tb_board__DOT__dut__DOT__voodoo__DOT__st[ps] & 7) != 2) vp_px[2]++;
+                else if (!r->tb_board__DOT__dut__DOT__voodoo__DOT__px_start) vp_px[3]++;
+            }
+            {   // ... and the frame-buffer read masters' handshakes and beats at hornet_ddr3
+                unsigned rd = t->rootp->tb_board__DOT__dm_read, wn = t->rootp->tb_board__DOT__dm_waitn;
+                unsigned rv = t->rootp->tb_board__DOT__dm_rvalid;
+                if (rd & wn & 8) vp_hs[0]++;
+                if (rd & wn & 16) vp_hs[1]++;
+                if (rv & 8) vp_hs[2]++;
+                if (rv & 16) vp_hs[3]++;
+            }
+            // ... line-buffer set-clocks by state (free, read, ready, proc, done, write)
+            for (int k = 0; k < 8; k++) vp_st[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__st[k] & 7]++;
+            // ... and drawing clocks by {chroma key, depth test, aux write, alpha test, blend}
+            if (((t->v_dbg >> 10) & 15) == 8) {
+                uint32_t fz = t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__fbzMode;
+                uint32_t am = t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__alphaMode;
+                vp_mode[((fz >> 1) & 1) << 4 | ((fz >> 4) & 1) << 3 | ((fz >> 10) & 1) << 2 | (am & 1) << 1 | ((am >> 4) & 1)]++;
+            }
             if (g & 0x800) dc[(g >> 7) & 7]++;
         }
         if (t->vid_overrun) {
@@ -1055,6 +1144,43 @@ int main(int argc, char **argv) {
                         dc[0], dc[1], dc[2], dc[3], dc[4], dc[5], dc[6], dc[7]);
                 fprintf(stderr, "frame %d Voodoo: drawing %llu clocks, texture fills %llu holding the pipeline %llu clocks\n",
                         frame, dd[13], dd[12], dd[11]);
+                if (Verilated::commandArgsPlusMatch("texstat")[0]) {
+                    fprintf(stderr, "frame %d texture fills by format:", frame);
+                    for (int k = 0; k < 16; k++) if (tx_fmt[k]) fprintf(stderr, " %d:%llu", k, (unsigned long long)tx_fmt[k]);
+                    fprintf(stderr, "; holding 8-bit %llu, 16-bit %llu clocks\n", (unsigned long long)tx_hold[0],
+                            (unsigned long long)tx_hold[1]);
+                }
+                if (Verilated::commandArgsPlusMatch("vprof")[0]) {
+                    static const char *cn[10] = {"idle", "load", "conv", "exec", "adj", "adj2", "fill", "swap", "tri", "texw"};
+                    static const char *tn[10] = {"idle", "sort", "div", "row0", "line", "clip", "span", "emit", "next", "drain"};
+                    fprintf(stderr, "frame %d Voodoo commands:", frame);
+                    for (int k = 0; k < 10; k++) fprintf(stderr, " %s %llu", cn[k], (unsigned long long)vp_cs[k]);
+                    fprintf(stderr, "; %llu triangles:", (unsigned long long)vp_tris);
+                    for (int k = 0; k < 10; k++) fprintf(stderr, " %s %llu", tn[k], (unsigned long long)vp_ts[k]);
+                    fprintf(stderr, "\nframe %d Voodoo drawing by mode (chroma, depth test, aux write, alpha test, blend):", frame);
+                    for (int k = 0; k < 32; k++)
+                        if (vp_mode[k]) fprintf(stderr, " %d%d%d%d%d:%llu", k >> 4 & 1, k >> 3 & 1, k >> 2 & 1, k >> 1 & 1, k & 1,
+                                                (unsigned long long)vp_mode[k]);
+                    fprintf(stderr, "\n");
+                }
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d line-buffer set-clocks: free %llu read %llu ready %llu proc %llu done %llu write %llu\n",
+                            frame, (unsigned long long)vp_st[0], (unsigned long long)vp_st[1], (unsigned long long)vp_st[2],
+                            (unsigned long long)vp_st[3], (unsigned long long)vp_st[4], (unsigned long long)vp_st[5]);
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d pixel pipeline: issuing %llu, fill %llu, no set %llu, sibling %llu\n", frame,
+                            (unsigned long long)vp_px[0], (unsigned long long)vp_px[1], (unsigned long long)vp_px[2],
+                            (unsigned long long)vp_px[3]);
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d frame-buffer reads: colour %llu (%llu beats), depth %llu (%llu beats)\n", frame,
+                            (unsigned long long)vp_hs[0], (unsigned long long)vp_hs[2], (unsigned long long)vp_hs[1],
+                            (unsigned long long)vp_hs[3]);
+                memset(vp_hs, 0, sizeof vp_hs);
+                memset(vp_px, 0, sizeof vp_px);
+                memset(vp_st, 0, sizeof vp_st);
+                memset(vp_mode, 0, sizeof vp_mode);
+                memset(vp_cs, 0, sizeof vp_cs); memset(vp_ts, 0, sizeof vp_ts); vp_tris = 0;
+                memset(tx_fmt, 0, sizeof tx_fmt); memset(tx_hold, 0, sizeof tx_hold);
                 memset(dd, 0, sizeof dd); memset(dc, 0, sizeof dc);
             }
             fprintf(stderr, "frame %d port A: reads work %llu, ROM %llu, char %llu (sequential %llu); writes %llu\n", frame,
@@ -1084,8 +1210,41 @@ int main(int argc, char **argv) {
                 for (auto &e : v) fprintf(sp, "%05X %llu\n", e.second, (unsigned long long)e.first);
                 fclose(sp);
                 dslow.clear();
+                fprintf(stderr, "frame %d SHARC hazards: late %llu, multi-cycle %llu, slow unit %llu, DAG %llu, a load's late %llu\n",
+                        frame, (unsigned long long)dhz[0], (unsigned long long)dhz[1], (unsigned long long)dhz[2],
+                        (unsigned long long)dhz[3], (unsigned long long)dhz[4]);
+                memset(dhz, 0, sizeof dhz);
+                fprintf(stderr, "frame %d SHARC DMA: waiting on the Voodoo %llu, on other external %llu, TCB %llu, other %llu clocks; "
+                        "%llu Voodoo accesses, %llu other external writes, %llu reads\n", frame,
+                        (unsigned long long)ddma[0], (unsigned long long)ddma[1], (unsigned long long)ddma[2],
+                        (unsigned long long)ddma[3], (unsigned long long)ddma[4], (unsigned long long)ddma[5],
+                        (unsigned long long)ddma[6]);
+                memset(ddma, 0, sizeof ddma);
+                fprintf(stderr, "frame %d SHARC line buffer: %llu misses, %llu prefetches, fills under way %llu clocks; "
+                        "reads waiting %llu clocks (%llu on a line not there)\n", frame, (unsigned long long)dlb[0],
+                        (unsigned long long)dlb[1], (unsigned long long)dlb[2], (unsigned long long)dlb[3],
+                        (unsigned long long)dlb[4]);
+                memset(dlb, 0, sizeof dlb);
+                v.clear();
+                for (auto &e : dempty) v.push_back({e.second, e.first});
+                std::sort(v.rbegin(), v.rend());
+                sp = fopen((snap + "/board_empty_pcs_f" + std::to_string(frame) + ".txt").c_str(), "w");
+                for (auto &e : v) fprintf(sp, "%05X %llu\n", e.second, (unsigned long long)e.first);
+                fclose(sp);
+                dempty.clear();
+                v.clear();
+                for (auto &e : dldhz) v.push_back({e.second, e.first});
+                std::sort(v.rbegin(), v.rend());
+                sp = fopen((snap + "/board_ldhz_pcs_f" + std::to_string(frame) + ".txt").c_str(), "w");
+                for (auto &e : v) fprintf(sp, "%05X %llu\n", e.second, (unsigned long long)e.first);
+                fclose(sp);
+                dldhz.clear();
             }
             dx_wait = dx_rwait = 0;
+            fprintf(stderr, "frame %d port B line reads: %llu lines, %llu words, waiting %llu clocks; crossing queue busy %llu clocks\n",
+                    frame, (unsigned long long)pbl[2], (unsigned long long)pbl[1], (unsigned long long)pbl[0],
+                    (unsigned long long)pbl[3]);
+            memset(pbl, 0, sizeof pbl);
             fprintf(stderr, "frame %d: SHARC waited %llu clocks on %llu Voodoo writes, idle %llu clocks\n", frame,
                     (unsigned long long)v_wait, (unsigned long long)v_writes, (unsigned long long)d_idle);
             fprintf(stderr, "frame %d at %llu clocks: PPC %llu, SHARC %llu instructions; front buffer RTL %u at %06X, "

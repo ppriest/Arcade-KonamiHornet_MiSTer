@@ -3,8 +3,8 @@
 A MiSTer FPGA core for Konami's Hornet arcade hardware (MAME's `konami/hornet.cpp`), built with
 Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: in development. Gradius IV boots to attract and into a game on a DE10-nano, 2D and 3D
-drawn, with sound from the MiSTer's ARM; not yet played through.**
+**Status: in development. Gradius IV boots and plays on a DE10-nano, 2D and 3D
+drawn, with sound from the MiSTer's ARM; Doensa't run full-speed on many levels **
 
 ## Contents
 
@@ -30,34 +30,9 @@ drawn, with sound from the MiSTer's ARM; not yet played through.**
 
 ## History
 
-- `Arcade-KonamiHornet_20261023.rbf` (`b25ab62`, fitter seed 3), with `arcsnd_20261023.zip`:
-  first release. Gradius IV plays on the DE10-nano with sound and MAME's cheats; busy scenes
-  (the gold dragons, the lava stage) slow down. The HDMI scaler's clock misses setup by 0.41 ns;
-  the core's clocks meet timing (see Resource usage).
-- `b25ab62`: the full-width bands at the bottom of the screen in the gold-dragon attract are
-  gone (`sw/fbdump/fbwatch` on the board: none in 10 minutes). The PPC has a 4 KB line cache,
-  the SHARC early data loads and DMA beside its instructions; the arcsnd server keeps playing
-  across a core reload.
-- `2779c02` (deployed as `KonamiHornet_30000017.rbf`): sound. The sound board (68000, K056800,
-  RF5C400) runs on the HPS in `sw/arcsnd`, alongside Hyper NeoGeo 64's; `hornet_sndbridge`
-  passes the PPC's writes to it through DDR3. Heard on the DE10-nano; the server's log shows the
-  game's commands arriving and no audio gaps, its 68000 using about half an ARM core.
-- `c0e55dc`: fast ROM loading from DDR3 (`sim/rom_loader_tb`): the boot's WARNING screen about
-  25 s after launch on the DE10-nano. The black screens of the builds before it were the HDMI
-  scaler's clock missing timing by 0.5 ns (fitter seed 2 cleared it).
-- `a034e0d`: attract at 97% of full frame rate on the DE10-nano (9 frames a second before): the
-  Voodoo's DDR3 masters move 64 bits a clock, and a texture miss fills up to eight tiles in one
-  burst. In-game sections still slow down.
-- `4376611`: the title screen matches MAME on the DE10-nano (`debug/hw/portc_boot.png`). Port C
-  answers a miss from its fill's first half, and the K037122 builder works up to three lines ahead:
-  no unbuilt lines (probe H).
-- `67a4bb6`: textures right. Port B addressed the CG ROM 8 MB from where the download puts it.
-- `cf13d8d`: the Voodoo's picture shows: its CLUT starts as MAME's grey ramp.
-- `f94e1a3`, `a804e5c`: the M48T58 is saved to the `.nvm` file; Test switch; the M48T58's clock.
-- `abaffc9`: the PPC's character RAM writes reach memory (they were dropped by a 23-bit address
-  in a 24-bit decode), so the start-up text can draw.
-- `6a3ce09`: first runs on a DE10-nano. Gradius IV boots to its start-up messages, placed where
-  MAME places them, with unreadable glyphs.
+`Arcade-KonamiHornet_20261024.rbf`
+* **Alpha**.
+* Gradius IV runs, but the Voodoo is too slow on many levels and the game will slow to 1/2 speed or worse. An optional indicator will display a yellow square at the top right when slowed.
 
 ## Games
 
@@ -68,17 +43,16 @@ memory are in DDR3.
 
 ### Supported
 
-Sets with an `.mra` in `releases/`.
+Sets with an `.mra` in `releases/` (clones in `releases/_alternatives/_Gradius IV/`).
 
 | Name | Year | Manufacturer | Controls | Notes |
 |-|-|-|-|-|
-| Gradius IV: Fukkatsu (ver JAC) | 1998 | Konami | 8-way joystick, three buttons, two players | playable with sound; slows down in busy scenes |
+| Gradius IV: Fukkatsu (ver JAC); clones ver AAC, UAC, AAA, UAA, JAA | 1998 | Konami | 8-way joystick, three buttons, two players | playable with sound; slows down in busy scenes; the clones not run on hardware yet |
 
 ### Not yet
 
 | Name | Why |
 |-|-|
-| Gradius IV clones (u, a, ua, aa) | no `.mra` yet; same board as the parent |
 | NBA Play By Play and its clones | needs the JVS host on the PPC's serial port |
 
 ### Out of scope for now
@@ -100,7 +74,7 @@ Sets with an `.mra` in `releases/`.
 | K033906 | the Voodoo's PCI configuration | written here from MAME's model |
 | M48T58 | 8 KB NVRAM and clock | written here; the clock from MAME's timekeeper, set from the MiSTer's time; saved to the `.nvm` file |
 | konppc glue, sysreg | shared RAM, comm registers, interrupts, inputs | written here from `hornet.cpp` and `konppc.cpp` |
-| MC68000, K056800, RF5C400 | sound | on the HPS (`sw/arcsnd`): Musashi and MAME's RF5C400 and board logic; `rtl/mister/hornet_sndbridge.sv` carries the PPC's writes and the board's replies through DDR3 |
+| MC68000, K056800, RF5C400 | sound | on the HPS ([MiSTer_ArcadeSoundServer](https://github.com/ppriest/MiSTer_ArcadeSoundServer)): Musashi and MAME's RF5C400 and board logic; `rtl/mister/hornet_sndbridge.sv` carries the PPC's writes and the board's replies through DDR3 |
 | X76F041 | security EEPROM | not built |
 
 ### Video timing
@@ -117,6 +91,15 @@ registers (`docs/HACKS.md`). There is no PCB measurement.
 
 ![gradius4 title](docs/screenshots/gradius4/title.png)
 
+On the DE10-nano (the MiSTer's screenshots):
+
+| | |
+|-|-|
+| ![Attract: the gold dragons](docs/screenshots/gradius4/20261023_191645-screen.png)<br>Attract: the gold dragons | ![Attract: the fortress](docs/screenshots/gradius4/20261024_135113-screen.png)<br>Attract: the fortress |
+| ![Power Meter Select](docs/screenshots/gradius4/20261024_135142-screen.png)<br>Power Meter Select | ![Stage 1](docs/screenshots/gradius4/20261024_135406-screen.png)<br>Stage 1 |
+| ![Stage 2](docs/screenshots/gradius4/20261024_135603-screen.png)<br>Stage 2 | ![Stage 3's boss](docs/screenshots/gradius4/20261024_140117-screen.png)<br>Stage 3's boss |
+| ![Stage 4](docs/screenshots/gradius4/20261024_140241-screen.png)<br>Stage 4 | ![Stage 4: the lava](docs/screenshots/gradius4/20261024_140826-screen.png)<br>Stage 4: the lava |
+
 ## Installation
 
 A 128 MB SDRAM module is required (the core uses 28 MB of it).
@@ -127,10 +110,10 @@ A 128 MB SDRAM module is required (the core uses 28 MB of it).
   sorts above every `Arcade-KonamiHornet_*.rbf`
 * Take the `*.mra` files from `releases/` and put them in `_Arcade`
 * Put the MAME `gradius4` set in `games/mame`
-* For sound: unzip `releases/arcsnd_<YYYYMMDD>.zip` onto the SD card's root (it holds
-  `games/arcsnd/arcsnd` and `Scripts/arcsnd.sh`), then run `arcsnd` from the Scripts menu, or
-  add `/media/fat/Scripts/arcsnd.sh start` to `linux/user-startup.sh` to start it at boot. It
-  waits in the background and plays whenever a Hornet (or Hyper NeoGeo 64) set is loaded
+* For sound: install the sound server, `arcsnd`, from
+  [MiSTer_ArcadeSoundServer](https://github.com/ppriest/MiSTer_ArcadeSoundServer) (its README has
+  the steps). It waits in the background and plays whenever a Hornet (or Hyper NeoGeo 64) set is
+  loaded
 
 To run a development build instead: `python scripts/build_staged.py`, then `python scripts/deploy.py`
 with a `mister.env` (see `scripts/deploy.py`).
@@ -151,20 +134,28 @@ with a `mister.env` (see `scripts/deploy.py`).
 
 Both players have the same layout on the first and second controllers.
 
+### Keyboard
+
+MAME's default keys, alongside the pads (the OSD must be closed):
+
+| Input | Player 1 | Player 2 |
+|-|-|-|
+| Joystick | arrows | R F D G |
+| Shot, Missile, Power Up | Left Ctrl, Left Alt, Space | A, S, Q |
+| Start | 1 | 2 |
+| Coin | 5 | 6 |
+| Service | 9 | 0 |
+| Test | F2 | |
+| Pause | P | |
+
 ## Status
 
 Known issues:
 
-- **Not yet played through on hardware; gameplay is unverified beyond the first stage's start.**
-- **Sound needs `arcsnd` running on the MiSTer** (Installation). Without it the bridge falls
-  back to the stand-in that answers the PPC's sound handshake, so the game should boot silent
-  (not tried on this build).
-- The first launch after deploying `c0e55dc` came up on noise (the image was not in DDR3); every
-  launch since has loaded. Not understood yet.
+- **Walking robots in stage 4's rocky section walk in the air** instead of falling to the ground.
 - **In-game sections slow down**, to half rate at times. Probes on the board point at three
   limits in different scenes: the PPC's memory port (no data cache), the SHARC's geometry, and the
   Voodoo's texture fills on full-screen layers.
-- The security EEPROM is absent.
 - **The first boot stops at "RTC CHECKSUM ERROR! ... PRESS TEST SWITCH TO CONTINUE"**, as MAME's does with the set's NVRAM image: press Test (L). The settings are then saved to the `.nvm` file.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be
@@ -191,11 +182,11 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 * Sound: yes, from the HPS (`arcsnd`)
 * Savestates (optional): not yet
 * Cheats (optional): yes, MAME's 24 Gradius IV cheats in the `.mra` (applied once a frame; `docs/HACKS.md`)
+* Slowdown indicator (OSD): a yellow square in the top-right corner for half a second after the game
+  misses a frame (a buffer swap two or more frames after the last) or a tilemap line is late
 
 ### Todo
 
-- [x] Boot to attract on hardware
-- [ ] Play through on hardware
 - [x] Fast ROM loading through DDR3
 - [ ] Full frame rate in game
 - [ ] Security EEPROM (X76F041) and JVS
@@ -203,14 +194,15 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Resource usage
 
-The release revision `KonamiHornet` at `b25ab62` (fitter seed 3) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.583 ns, clk_sys) and missed
-on the HDMI scaler's by 0.41 ns; no HDMI fault was seen in play on the board.
+The release revision `KonamiHornet` at `bde515a` (fitter seed 4) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.068 ns, the SHARC's clk_dsp;
+clk_sys +0.744) and missed on the HDMI scaler's by 0.758 ns. At this utilisation the fitter
+crashed on seed 3 (`docs/LESSONS_LEARNED.md`).
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 41,491 | 41,910 |
-| Block memory bits | 4,405,957 | 5,662,720 |
+| Logic (ALMs) | 41,660 | 41,910 |
+| Block memory bits | 4,407,017 | 5,662,720 |
 | RAM blocks | 553 | 553 |
 | DSP blocks | 96 | 112 |
 | PLLs | 3 | 6 |
@@ -271,7 +263,6 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 | `docs` | roadmap, workflow, release process, kludges, hacks, lessons |
 | `sim` | ModelSim and Verilator testbenches |
 | `scripts` | build, deploy, capture and verification tooling |
-| `sw/arcsnd` | the sound server on the HPS; `PROVENANCE.md` lists its sources |
 | `debug` | reference captures from MAME used as ground truth (gitignored) |
 | `roms` | your own MAME sets (gitignored, never committed) |
 

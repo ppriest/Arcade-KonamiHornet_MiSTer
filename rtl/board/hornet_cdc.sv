@@ -40,6 +40,7 @@ module hornet_afifo #(
     input  logic          w_push,
     input  logic [DW-1:0] w_data,
     output logic          w_full,
+    output logic          w_room2,      // two or more free
     input  logic          clk_r,
     input  logic          rst_r,
     input  logic          r_pop,
@@ -68,6 +69,7 @@ module hornet_afifo #(
     (* altera_attribute = "-name SYNCHRONIZER_IDENTIFICATION FORCED_IF_ASYNCHRONOUS" *) logic [AW:0] rg_s1;
     always_ff @(posedge clk_w) begin rg_s1 <= rg; rg_w <= rg_s1; end
     assign w_full = (wb - g2b(rg_w)) == (AW + 1)'(1 << AW);
+    assign w_room2 = (wb - g2b(rg_w)) <= (AW + 1)'((1 << AW) - 2);
 
     // read side
     always_ff @(posedge clk_r) begin

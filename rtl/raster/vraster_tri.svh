@@ -397,13 +397,19 @@ always_ff @(posedge clk) begin
     end
     T_EMIT: if ((!sd_v || sd_take) && !mv1 && !mv_q) begin
         logic [20:0] rb;
+        logic [9:0]  xb;
         rb = 21'(s_scry * rowpix) << 1;
+        // a set holds 64 beats: a longer span goes as its first 64, the rest from T_SPAN again
+        xb = {sx0[9:2] + 8'd64, 2'b00};
         sd_v <= 1'b1;
-        sd_x0 <= sx0; sd_x1 <= sx1; sd_scry <= s_scry;
+        sd_x0 <= sx0; sd_x1 <= (sx1 > xb) ? xb : sx1; sd_scry <= s_scry;
         sd_crow <= rgboffs[fbzMode[15:14] == 2'd0 ? frontbuf : backbuf] + rb;
         sd_zrow <= auxoffs + rb;
         sd_a <= sp_a <<< 8; sd_w <= sp_w; sd_s <= sp_s; sd_t <= sp_t;
-        ts <= T_NEXT;
+        if (sx1 > xb) begin
+            sx0 <= xb; cx0 <= $signed({2'b0, xb}); pk <= 2'd0;
+            ts <= T_SPAN;
+        end else ts <= T_NEXT;
     end
     T_NEXT: begin
         y_cur <= y_cur + 12'sd1;
@@ -418,25 +424,32 @@ end
 
 // ---------------------------------------------------------------- line-buffer sets
 
-// a set: colour and depth rows, a word (two pixels) an entry; the span it holds
+// A set: a span's colour and depth rows, a beat (four pixels) an entry from the span's first beat.
+// Eight sets share four RAM pairs, set k in pair k[1:0]'s half k[2] of 64 entries (T_EMIT splits a
+// longer span), so that short spans have twice the sets in flight. The halves share the RAMs'
+// ports, a clock at a time: on port A q18's pixel goes first and the reader's beat for that RAM
+// waits in hornet_ddr3 (readReady); on port B q16's read goes first and the writer reads again.
 typedef enum logic [2:0] { S_FREE, S_READ, S_READY, S_PROC, S_DONE, S_WRITE } sstate_t;
-localparam int NSET = 4;                               // line-buffer sets (3 or 4)
+localparam int NSET = 8;
+function automatic logic [1:0] lb_ram(input logic [2:0] k);
+    return k[1:0];
+endfunction
+function automatic logic lb_half(input logic [2:0] k);
+    return k[2];
+endfunction
 sstate_t     st [NSET];
-logic [9:0]  s_x0 [NSET], s_x1 [NSET], s_sy [NSET];
-logic [20:0] s_crw [NSET], s_zrw [NSET];
-logic signed [31:0] s_a [NSET];
-logic signed [63:0] s_w [NSET], s_s [NSET], s_t [NSET];
-logic [1:0]  rd_set, px_set, wr_set;                   // next set for each stage, in turn
+logic [9:0]  s_x0 [NSET], s_x1 [NSET];
+logic [2:0]  rd_set, px_set, wr_set;                   // next set for each stage, in turn
 
 // RAM ports: A writes (reader beats, pipeline pixels), B reads (pipeline, writer); colour and
 // depth addressed apart, so that their streams run side by side. An entry is a 64-bit beat, two
 // words (four pixels): the masters are wide (hornet_ddr3 WIDE)
-logic [6:0]  lac_addr [NSET], laz_addr [NSET], lbc_addr [NSET], lbz_addr [NSET];
-logic [7:0]  lca_be [NSET], lza_be [NSET];
-logic [63:0] lca_d [NSET], lza_d [NSET];
-logic [63:0] lcb_q [NSET], lzb_q [NSET];
+logic [6:0]  lac_addr [4], laz_addr [4], lbc_addr [4], lbz_addr [4];
+logic [7:0]  lca_be [4], lza_be [4];
+logic [63:0] lca_d [4], lza_d [4];
+logic [63:0] lcb_q [4], lzb_q [4];
 genvar gs;
-generate for (gs = 0; gs < NSET; gs++) begin : g_set
+generate for (gs = 0; gs < 4; gs++) begin : g_set
     hornet_sdpram #(.AW(7), .DW(64)) u_c (.clk,
         .a_addr(lac_addr[gs]), .a_be(lca_be[gs]), .a_wdata(lca_d[gs]),
         .b_addr(lbc_addr[gs]), .b_rdata(lcb_q[gs]));
@@ -445,9 +458,20 @@ generate for (gs = 0; gs < NSET; gs++) begin : g_set
         .b_addr(lbz_addr[gs]), .b_rdata(lzb_q[gs]));
 end endgenerate
 
-function automatic logic [1:0] nxt3(input logic [1:0] k);   // the next set
-    return (NSET == 3 && k == 2'd2) ? 2'd0 : k + 2'd1;
-endfunction
+// A set's span parameters in block RAM: {row, A, W, S, T} for the pipeline and the colour and depth
+// row addresses for the writer, each read at the index its stage will have next clock (px_nx,
+// wr_nx), so that the data is the current set's; the reader keeps its span's rows in registers
+localparam int PW = 240;                               // 10 + 32 + 3 * 64, to whole bytes
+logic [PW-1:0] par_q;
+logic [47:0] wrow_q;
+logic [2:0]  px_nx, wr_nx;
+logic [20:0] rd_crw, rd_zrw;
+hornet_sdpram #(.AW(3), .DW(PW)) u_par (.clk, .a_addr(rd_set), .a_be({(PW / 8){sd_take}}),
+    .a_wdata(PW'({sd_scry, sd_a, sd_w, sd_s, sd_t})), .b_addr(px_nx), .b_rdata(par_q));
+hornet_sdpram #(.AW(3), .DW(48)) u_wrow (.clk, .a_addr(rd_set), .a_be({6{sd_take}}),
+    .a_wdata(48'({sd_crow, sd_zrow})), .b_addr(wr_nx), .b_rdata(wrow_q));
+always_ff @(posedge clk) if (sd_take) begin rd_crw <= sd_crow; rd_zrw <= sd_zrow; end
+wire [20:0] wr_crw = wrow_q[41:21], wr_zrw = wrow_q[20:0];
 
 // ---------------------------------------------------------------- span reader
 //
@@ -458,7 +482,7 @@ endfunction
 typedef enum logic [0:0] { R_IDLE, R_REQ } rstate_t;
 rstate_t     rs;
 logic        rz_iss, rc_iss;                           // this span's requests are accepted
-logic [1:0]  zd_set, cd_set;                           // the set each port's data is for
+logic [2:0]  zd_set, cd_set;                           // the set each port's data is for
 logic [8:0]  zd_n, cd_n;                               // the next word, from the span's first
 logic [NSET-1:0] zdn, cdn;                             // a set's depth, colour rows are in
 
@@ -480,15 +504,13 @@ assign sd_take = rs == R_IDLE && sd_v && st[rd_set] == S_FREE;
 
 always_ff @(posedge clk) begin
     if (reset) begin
-        rs <= R_IDLE; rd_set <= 2'd0; zd_set <= 2'd0; cd_set <= 2'd0; zd_n <= 9'd0; cd_n <= 9'd0;
+        rs <= R_IDLE; rd_set <= 3'd0; zd_set <= 3'd0; cd_set <= 3'd0; zd_n <= 9'd0; cd_n <= 9'd0;
         zdn <= '0; cdn <= '0;
         for (int k = 0; k < NSET; k++) st[k] <= S_FREE;
     end else begin
         case (rs)
         R_IDLE: if (sd_take) begin
-            s_x0[rd_set] <= sd_x0; s_x1[rd_set] <= sd_x1; s_sy[rd_set] <= sd_scry;
-            s_crw[rd_set] <= sd_crow; s_zrw[rd_set] <= sd_zrow;
-            s_a[rd_set] <= sd_a; s_w[rd_set] <= sd_w; s_s[rd_set] <= sd_s; s_t[rd_set] <= sd_t;
+            s_x0[rd_set] <= sd_x0; s_x1[rd_set] <= sd_x1;
             st[rd_set] <= S_READ;
             rz_iss <= 1'b0; rc_iss <= 1'b0;
             rs <= R_REQ;
@@ -496,17 +518,17 @@ always_ff @(posedge clk) begin
         R_REQ: begin
             if (zacc) rz_iss <= 1'b1;
             if (cacc) rc_iss <= 1'b1;
-            if ((rz_iss || zacc) && (rc_iss || cacc)) begin rd_set <= nxt3(rd_set); rs <= R_IDLE; end
+            if ((rz_iss || zacc) && (rc_iss || cacc)) begin rd_set <= rd_set + 3'd1; rs <= R_IDLE; end
         end
         default: rs <= R_IDLE;
         endcase
         // a beat (two words) a clock
         if (zd_v) begin
-            if (rw0[zd_set] + zd_n + 9'd1 == rw1[zd_set]) begin zdn[zd_set] <= 1'b1; zd_set <= nxt3(zd_set); zd_n <= 9'd0; end
+            if (rw0[zd_set] + zd_n + 9'd1 == rw1[zd_set]) begin zdn[zd_set] <= 1'b1; zd_set <= zd_set + 3'd1; zd_n <= 9'd0; end
             else zd_n <= zd_n + 9'd2;
         end
         if (cd_v) begin
-            if (rw0[cd_set] + cd_n + 9'd1 == rw1[cd_set]) begin cdn[cd_set] <= 1'b1; cd_set <= nxt3(cd_set); cd_n <= 9'd0; end
+            if (rw0[cd_set] + cd_n + 9'd1 == rw1[cd_set]) begin cdn[cd_set] <= 1'b1; cd_set <= cd_set + 3'd1; cd_n <= 9'd0; end
             else cd_n <= cd_n + 9'd2;
         end
         for (int k = 0; k < NSET; k++)
@@ -521,13 +543,13 @@ end
 
 assign io_memFbAuxRead_read = rs == R_REQ && !rz_iss;
 assign io_memFbAuxRead_write = 1'b0;
-assign io_memFbAuxRead_address = FB_BASE + {11'h0, s_zrw[rd_set]} + {21'h0, rw0[rd_set], 2'b00};
+assign io_memFbAuxRead_address = FB_BASE + {11'h0, rd_zrw} + {21'h0, rw0[rd_set], 2'b00};
 assign io_memFbAuxRead_burstCount = {2'b0, rw1[rd_set] - rw0[rd_set] + 9'd1};
 assign io_memFbAuxRead_byteEnable = 4'hF;
 assign io_memFbAuxRead_writeData = 32'h0;
 assign io_memFbColorRead_read = rs == R_REQ && !rc_iss;
 assign io_memFbColorRead_write = 1'b0;
-assign io_memFbColorRead_address = FB_BASE + {11'h0, s_crw[rd_set]} + {21'h0, rw0[rd_set], 2'b00};
+assign io_memFbColorRead_address = FB_BASE + {11'h0, rd_crw} + {21'h0, rw0[rd_set], 2'b00};
 assign io_memFbColorRead_burstCount = {2'b0, rw1[rd_set] - rw0[rd_set] + 9'd1};
 assign io_memFbColorRead_byteEnable = 4'hF;
 assign io_memFbColorRead_writeData = 32'h0;
@@ -556,16 +578,17 @@ localparam int TSW = 2 * TCB;
 
 logic        stall;                                    // a cache fill is under way
 logic        px_run;                                   // the iterators are issuing a span
-logic [1:0]  p0_set;
-logic [9:0]  p0_x;
+logic [2:0]  p0_set;
+logic [9:0]  p0_x, p0_sy;
 logic signed [31:0] p0_a;
 logic signed [63:0] p0_w, p0_s, p0_t;
 logic        px_start, px_finish;
-logic [1:0]  px_fin_set;
+logic [2:0]  px_fin_set;
 
 typedef struct packed {
     logic        v, last;
-    logic [1:0]  set;
+    logic [2:0]  set;
+    logic [5:0]  o;                                    // the line-buffer entry: beat from the set's first
     logic [9:0]  x, sy;
     logic [7:0]  ia;                                   // iterated A, clamped
     logic [15:0] wf;                                   // wfloat, from q3
@@ -573,18 +596,19 @@ typedef struct packed {
 pm_t m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17, m18;
 
 assign px_start = !px_run && st[px_set] == S_READY && !stall;
+assign px_nx = (!stall && px_run && p0_x + 10'd1 == s_x1[p0_set]) ? px_set + 3'd1 : px_set;
 
 always_ff @(posedge clk) begin
-    if (reset) begin px_run <= 1'b0; px_set <= 2'd0; end
+    if (reset) begin px_run <= 1'b0; px_set <= 3'd0; end
     else if (!stall) begin
         if (px_start) begin
             px_run <= 1'b1; p0_set <= px_set;
             p0_x <= s_x0[px_set];
-            p0_a <= s_a[px_set]; p0_w <= s_w[px_set]; p0_s <= s_s[px_set]; p0_t <= s_t[px_set];
+            {p0_sy, p0_a, p0_w, p0_s, p0_t} <= par_q[233:0];
         end else if (px_run) begin
             p0_x <= p0_x + 10'd1;
             p0_a <= p0_a + (dAdX <<< 8); p0_w <= p0_w + dWdX; p0_s <= p0_s + dSdX; p0_t <= p0_t + dTdX;
-            if (p0_x + 10'd1 == s_x1[p0_set]) begin px_run <= 1'b0; px_set <= nxt3(px_set); end
+            if (p0_x + 10'd1 == s_x1[p0_set]) begin px_run <= 1'b0; px_set <= px_set + 3'd1; end
         end
     end
 end
@@ -633,7 +657,7 @@ logic        nw9;
 tc_t         tc10, tc11, tc12, tc13, tc14;
 logic [TSW-1:0] slot11 [4];
 logic [26:0] tag11 [4];
-logic [TSW+1:0] ra11 [4];
+logic [TSW:0] ra11 [4];
 
 assign mn3 = 32'((aw3 << c3.lz) >> 32);
 always_ff @(posedge clk) if (!stall) seed4 <= seed_rom[mn3[30:21]];
@@ -643,10 +667,11 @@ always_ff @(posedge clk) if (!stall) begin
     logic signed [47:0] e;
     logic signed [19:0] er;
     logic [31:0] yy, qs, qt;
-    logic [TSW+1:0] ra [4];
+    logic [TSW:0] ra [4];
     // q1
     m1.v <= px_run; m1.last <= px_run && p0_x + 10'd1 == s_x1[p0_set];
-    m1.set <= p0_set; m1.x <= p0_x; m1.sy <= s_sy[p0_set];
+    m1.set <= p0_set; m1.x <= p0_x; m1.sy <= p0_sy;
+    m1.o <= 6'(p0_x[9:2] - s_x0[p0_set][9:2]);
     m1.ia <= pclamp8(12'(p0_a >>> 20)); m1.wf <= 16'h0;
     w1 <= p0_w; s1 <= p0_s; t1 <= p0_t;
     // q2
@@ -703,7 +728,7 @@ always_ff @(posedge clk) if (!stall) begin
         s = tap_s(tc10, k); t = tap_t(tc10, k);
         slot11[k] <= tile_slot(s, t);
         tag11[k] <= tile_tag(s, t);
-        ra[{t[0], s[0]}] = {tile_slot(s, t), t[1], s[1]};
+        ra[{t[0], s[0]}] = {tile_slot(s, t), t[1]};
     end
     for (int b = 0; b < 4; b++) ra11[b] <= ra[b];
 end
@@ -718,10 +743,11 @@ end
 // wait for that. Frame 2150's tile fills by size: 64 slots 20,040, 256 9,687, 1024 2,487; at
 // memlat 20, 256 slots take 925k clocks for the frame, 1024 703k. At 256 the board bench (one burst a port at a time) falls a frame behind at 2150.
 
-logic [15:0] tbank0 [4 << TSW], tbank1 [4 << TSW], tbank2 [4 << TSW], tbank3 [4 << TSW];
+// a bank entry: a tile-row's two texels of the bank's column parity, {s & 2, !(s & 2)}
+logic [31:0] tbank0 [2 << TSW], tbank1 [2 << TSW], tbank2 [2 << TSW], tbank3 [2 << TSW];
 logic [3:0]  tb_we;
-logic [TSW+1:0] tb_wa [4];
-logic [15:0] tb_wd [4];
+logic [TSW:0] tb_wa [4];
+logic [31:0] tb_wd [4];
 logic [27:0] tagm0 [1 << TSW], tagm1 [1 << TSW], tagm2 [1 << TSW], tagm3 [1 << TSW];  // valid, tag
 logic [27:0] tq11 [4];                                 // q11's taps' entries
 logic        tg_we;
@@ -729,7 +755,7 @@ logic [TSW-1:0] tg_wa;
 logic [27:0] tg_wd;
 logic        tag_clr;                                  // clearing the tags
 logic [TSW-1:0] clr_i;
-logic [15:0] tb_q [4];
+logic [31:0] tb_q [4];
 
 function automatic logic [26:0] tile_tag(input logic [7:0] s, input logic [7:0] t);
     return {texel_addr({s[7:2], 2'b00}, {t[7:2], 2'b00}), t_twb, t16};
@@ -765,27 +791,32 @@ end
 
 // fill: the first missing tile and up to TRUN-1 after it along s, to the texture row's end (spans
 // run along s, and a row of a run is one burst: a latency for TRUN tiles). Four row reads are
-// issued back to back (a tile-row is a word of 8-bit texels, two of 16-bit) and their data written
-// as it comes, row after row, tile after tile; then the run's tags a clock each (F2_TAG); F2_WAIT
-// lets the last reach the tag read
+// issued back to back and their data written as it comes, row after row, tile after tile: a 16-bit
+// tile-row is a beat, written in its clock; an 8-bit row's beat is two tile-rows, the low word
+// written as it comes and the high the clock after, with readReady low between (an odd row start
+// leaves a word to skip, an odd end one at the end). Then the run's tags a clock each (F2_TAG);
+// F2_WAIT lets the last reach the tag read
 localparam int TRUN = 8;
 typedef enum logic [2:0] { F2_IDLE, F2_REQ, F2_DATA, F2_TAG, F2_WAIT } fillst_t;
 fillst_t     fls;
 logic [7:0]  cf_s, cf_t;                               // the run's first texel
 logic [3:0]  cf_kn;                                    // tiles in the run
 logic [1:0]  cf_rq;                                    // the next row to request
-logic [1:0]  cf_r;                                     // the next data word's row
-logic [2:0]  cf_k;                                     // ... its tile in the run
-logic        cf_w;                                     // ... and its word within a 16-bit tile-row
+logic [1:0]  cf_r;                                     // the next data's row
+logic [2:0]  cf_k;                                     // ... its tile in the run (16-bit)
+logic [3:0]  cf_wi;                                    // ... its word in the row's burst (8-bit)
+logic [3:0]  cf_pad;                                   // an 8-bit row's burst starts a word early
 logic [2:0]  tg_k;                                     // the next tag written
-logic        hp_v;                                     // an 8-bit word's second texel pair, written
-logic [1:0]  hp_r;                                     // the clock after the word
-logic [2:0]  hp_k;
-logic [15:0] hp_d;
+logic        h_v;                                      // an 8-bit beat's high word, written now
+logic [31:0] h_d;
 logic        tex_clear;                                // a texture memory write
 wire         fill_dv = (fls == F2_REQ || fls == F2_DATA) && io_memTex_readDataValid;
 wire         k_last = {1'b0, cf_k} == cf_kn - 4'd1;
-wire         fill_last = fill_dv && cf_r == 2'd3 && k_last && (cf_w || !t16);
+// an 8-bit row's words: the pad, the run's tiles, and the burst's last to make it even
+wire [3:0]   w_end = 4'((5'(cf_pad[cf_r]) + 5'(cf_kn) + 5'd1) & 5'h1E);
+wire         w_last = cf_wi + 4'd2 == w_end;
+wire         fill_last = t16 ? fill_dv && cf_r == 2'd3 && k_last : h_v && cf_r == 2'd3 && w_last;
+assign io_memTex_readReady = !(fill_dv && !t16);
 // tile k of the run's first texel
 function automatic logic [7:0] run_s(input logic [7:0] s, input logic [2:0] k);
     return s + {3'b0, k, 2'b00};
@@ -799,17 +830,15 @@ always_ff @(posedge clk) begin
         if (&clr_i) tag_clr <= 1'b0;
     end
     if (reset || (tex_clear && !tag_clr)) begin tag_clr <= 1'b1; clr_i <= '0; end
-    hp_v <= fill_dv && !t16;
-    hp_r <= cf_r;
-    hp_k <= cf_k;
-    hp_d <= io_memTex_readData[31:16];
-    if (fill_dv) begin
-        if (t16 && !cf_w) cf_w <= 1'b1;
-        else begin
-            cf_w <= 1'b0;
-            if (k_last) begin cf_k <= 3'd0; cf_r <= cf_r + 2'd1; end
-            else cf_k <= cf_k + 3'd1;
-        end
+    h_v <= fill_dv && !t16;
+    if (fill_dv) h_d <= io_memTex_readDataHi;
+    if (fill_dv && t16) begin
+        if (k_last) begin cf_k <= 3'd0; cf_r <= cf_r + 2'd1; end
+        else cf_k <= cf_k + 3'd1;
+    end
+    if (h_v) begin
+        if (w_last) begin cf_wi <= 4'd0; cf_r <= cf_r + 2'd1; end
+        else cf_wi <= cf_wi + 4'd2;
     end
     if (reset) fls <= F2_IDLE;
     else case (fls)
@@ -825,10 +854,11 @@ always_ff @(posedge clk) begin
             left = (9'd1 << t_twb) - {1'b0, ms[7:2], 2'b00};
             cf_kn <= (left[8:2] >= 7'(TRUN)) ? 4'(TRUN) : left[5:2];
         end
-        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_w <= 1'b0;
+        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0;
         fls <= F2_REQ;
     end
     F2_REQ: if (io_memTex_waitRequestn) begin
+        cf_pad[cf_rq] <= !t16 && tf_a[2];
         cf_rq <= cf_rq + 2'd1;
         if (cf_rq == 2'd3) fls <= F2_DATA;
     end
@@ -841,6 +871,10 @@ always_ff @(posedge clk) begin
     default: fls <= F2_IDLE;
     endcase
 end
+`ifndef SYNTHESIS
+always_ff @(posedge clk)
+    if (fls == F2_REQ && t16 && tf_a[2]) $error("vraster: a 16-bit texture row at an odd word (%06X)", tf_a);
+`endif
 
 // the tag writes: the run's tiles after their data, or the clear's
 always_comb begin
@@ -849,26 +883,33 @@ always_comb begin
     tg_wd = tag_clr ? 28'h0 : {1'b1, tile_tag(run_s(cf_s, tg_k), cf_t)};
 end
 
-// the fill's bank writes, two texels a clock into banks (row parity, column parity): a 16-bit
-// word's two, or an 8-bit word's first pair and the previous word's second (rows alternate parity)
+// the fill's bank writes into banks (row parity, column parity), an entry (two texels) a bank: a
+// 16-bit beat's tile-row, or an 8-bit word's (the beat's low word as it comes, its high the clock
+// after; a word outside the run's tiles is the burst's padding)
 always_comb begin
+    logic [31:0] w;
+    logic [3:0]  wi;
+    logic [2:0]  k;
+    logic        on;
     tb_we = 4'h0;
-    for (int b = 0; b < 4; b++) begin tb_wa[b] = '0; tb_wd[b] = 16'h0; end
-    for (int c = 0; c < 2; c++) begin
-        logic [1:0] b;
-        if (fill_dv) begin
-            b = {cf_r[0], 1'(c)};
-            tb_we[b] = 1'b1;
-            tb_wa[b] = {tile_slot(run_s(cf_s, cf_k), cf_t), cf_r[1], t16 ? cf_w : 1'b0};
-            tb_wd[b] = t16 ? io_memTex_readData[16 * c +: 16] : {8'h00, io_memTex_readData[8 * c +: 8]};
-        end
-        if (hp_v) begin
-            b = {hp_r[0], 1'(c)};
-            tb_we[b] = 1'b1;
-            tb_wa[b] = {tile_slot(run_s(cf_s, hp_k), cf_t), hp_r[1], 1'b1};
-            tb_wd[b] = {8'h00, hp_d[8 * c +: 8]};
-        end
+    for (int b = 0; b < 4; b++) begin tb_wa[b] = '0; tb_wd[b] = 32'h0; end
+    if (t16) begin
+        on = fill_dv; k = cf_k;
+        tb_wd[{cf_r[0], 1'b0}] = {io_memTex_readDataHi[15:0], io_memTex_readData[15:0]};
+        tb_wd[{cf_r[0], 1'b1}] = {io_memTex_readDataHi[31:16], io_memTex_readData[31:16]};
+    end else begin
+        w = h_v ? h_d : io_memTex_readData;
+        wi = h_v ? cf_wi + 4'd1 : cf_wi;
+        k = 3'(wi - 4'(cf_pad[cf_r]));
+        on = (fill_dv || h_v) && wi >= 4'(cf_pad[cf_r]) && wi - 4'(cf_pad[cf_r]) < cf_kn;
+        tb_wd[{cf_r[0], 1'b0}] = {8'h00, w[23:16], 8'h00, w[7:0]};
+        tb_wd[{cf_r[0], 1'b1}] = {8'h00, w[31:24], 8'h00, w[15:8]};
     end
+    if (on)
+        for (int c = 0; c < 2; c++) begin
+            tb_we[{cf_r[0], 1'(c)}] = 1'b1;
+            tb_wa[{cf_r[0], 1'(c)}] = {tile_slot(run_s(cf_s, k), cf_t), cf_r[1]};
+        end
 end
 
 always_ff @(posedge clk) begin
@@ -896,15 +937,17 @@ pb_t         pb18;
 logic [15:0] dpix17, dz17;
 
 always_comb
-    for (int k = 0; k < NSET; k++) begin
-        lbc_addr[k] = (ws == W_RUN && wr_set == 2'(k)) ? wc_next[7:1] : m16.x[8:2];
-        lbz_addr[k] = (ws == W_RUN && wr_set == 2'(k)) ? wz_next[7:1] : m16.x[8:2];
+    for (int k = 0; k < 4; k++) begin
+        lbc_addr[k] = (ws == W_RUN && lb_ram(wr_set) == 2'(k) && !wr_steal) ? {lb_half(wr_set), 6'((wc_next - ww0) >> 1)}
+                                                                            : {lb_half(m16.set), m16.o};
+        lbz_addr[k] = (ws == W_RUN && lb_ram(wr_set) == 2'(k) && !wr_steal) ? {lb_half(wr_set), 6'((wz_next - ww0) >> 1)}
+                                                                            : {lb_half(m16.set), m16.o};
     end
 
 always_comb begin
     logic [31:0] dc, dz;
-    dc = m17.x[1] ? lcb_q[m17.set][63:32] : lcb_q[m17.set][31:0];
-    dz = m17.x[1] ? lzb_q[m17.set][63:32] : lzb_q[m17.set][31:0];
+    dc = m17.x[1] ? lcb_q[lb_ram(m17.set)][63:32] : lcb_q[lb_ram(m17.set)][31:0];
+    dz = m17.x[1] ? lzb_q[lb_ram(m17.set)][63:32] : lzb_q[lb_ram(m17.set)][31:0];
     dpix17 = m17.x[0] ? dc[31:16] : dc[15:0];
     dz17 = m17.x[0] ? dz[31:16] : dz[15:0];
 end
@@ -918,7 +961,7 @@ always_ff @(posedge clk) begin
     for (int k = 0; k < 4; k++) begin
         logic [7:0] s, t;
         s = tap_s(tc12, k); t = tap_t(tc12, k);
-        tx13[k] <= texel_argb(textureMode[11:8], tb_q[{t[0], s[0]}]);
+        tx13[k] <= texel_argb(textureMode[11:8], s[1] ? tb_q[{t[0], s[0]}][31:16] : tb_q[{t[0], s[0]}][15:0]);
     end
     // q14
     m14 <= m13; tc14 <= tc13;
@@ -943,24 +986,28 @@ end
 logic [15:0] px_color;
 assign px_color = dither565(fbzMode, m18.sy[1:0], m18.x[1:0], pb18.r, pb18.g, pb18.b);
 always_comb
-    for (int k = 0; k < NSET; k++) begin
+    for (int k = 0; k < 4; k++) begin
         lac_addr[k] = 7'h0; laz_addr[k] = 7'h0;
         lca_be[k] = 8'h0; lza_be[k] = 8'h0; lca_d[k] = 64'h0; lza_d[k] = 64'h0;
-        if (m18.v && m18.set == 2'(k) && pb18.ok) begin
-            lac_addr[k] = m18.x[8:2]; laz_addr[k] = m18.x[8:2];
+        if (m18.v && lb_ram(m18.set) == 2'(k) && pb18.ok) begin
+            lac_addr[k] = {lb_half(m18.set), m18.o}; laz_addr[k] = {lb_half(m18.set), m18.o};
             lca_d[k] = {4{px_color}}; lza_d[k] = {4{pb18.depth}};
             lca_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
             lza_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
         end
-        if (zd_v && zd_set == 2'(k)) begin
-            laz_addr[k] = 7'((rw0[zd_set] + zd_n) >> 1);
+        if (zd_v && lb_ram(zd_set) == 2'(k)) begin
+            laz_addr[k] = {lb_half(zd_set), 6'(zd_n >> 1)};
             lza_d[k] = {io_memFbAuxRead_readDataHi, io_memFbAuxRead_readData}; lza_be[k] = 8'hFF;
         end
-        if (cd_v && cd_set == 2'(k)) begin
-            lac_addr[k] = 7'((rw0[cd_set] + cd_n) >> 1);
+        if (cd_v && lb_ram(cd_set) == 2'(k)) begin
+            lac_addr[k] = {lb_half(cd_set), 6'(cd_n >> 1)};
             lca_d[k] = {io_memFbColorRead_readDataHi, io_memFbColorRead_readData}; lca_be[k] = 8'hFF;
         end
     end
+
+// a beat may come next clock unless q17's pixel will be written (q18) to the RAM it may be for
+assign io_memFbColorRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(cd_set) || lb_ram(m17.set) == lb_ram(cd_set + 3'd1)));
+assign io_memFbAuxRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(zd_set) || lb_ram(m17.set) == lb_ram(zd_set + 3'd1)));
 
 assign px_finish = m18.v && m18.last;
 assign px_fin_set = m18.set;
@@ -974,15 +1021,18 @@ assign px_fin_set = m18.set;
 typedef enum logic [0:0] { W_IDLE, W_RUN } wstate_t;
 wstate_t     ws;
 logic        wr_start, wr_finish;
-logic [1:0]  wr_fin_set;
+logic [2:0]  wr_fin_set;
 logic [8:0]  ww0, ww1;
 logic [8:0]  wc_a, wz_a, wc_next, wz_next;             // the word each stream presents; read next
 logic        wc_v, wz_v;                               // the line buffer's output holds it
 logic        wc_on, wz_on;                             // the stream has words left
+wire         wr_steal = m16.v && lb_ram(m16.set) == lb_ram(wr_set);   // q16 reads the writer's RAM
 wire         wc_acc = ws == W_RUN && wc_on && wc_v && io_memFbColorWrite_waitRequestn;
 wire         wz_acc = ws == W_RUN && wz_on && wz_v && io_memFbAuxWrite_waitRequestn;
 
 assign wr_start = ws == W_IDLE && st[wr_set] == S_DONE;
+assign wr_nx = (ws == W_IDLE ? wr_start && !fbzMode[9] && !(fbzMode[10] && aux_ok) : ws == W_RUN && wr_finish)
+               ? wr_set + 3'd1 : wr_set;
 assign wr_fin_set = wr_set;
 assign wc_next = wc_acc ? wc_a + 9'd2 : wc_a;
 assign wz_next = wz_acc ? wz_a + 9'd2 : wz_a;
@@ -990,7 +1040,7 @@ assign wr_finish = (ws == W_RUN && !(wc_on && !(wc_acc && wc_a + 9'd1 == ww1)) &
                    (wr_start && !fbzMode[9] && !(fbzMode[10] && aux_ok));
 
 always_ff @(posedge clk) begin
-    if (reset) begin ws <= W_IDLE; wr_set <= 2'd0; end
+    if (reset) begin ws <= W_IDLE; wr_set <= 3'd0; end
     else case (ws)
     W_IDLE: if (wr_start) begin
         ww0 <= rw0[wr_set]; ww1 <= rw1[wr_set];
@@ -998,14 +1048,14 @@ always_ff @(posedge clk) begin
         wc_v <= 1'b0; wz_v <= 1'b0;
         wc_on <= fbzMode[9]; wz_on <= fbzMode[10] && aux_ok;
         if (fbzMode[9] || (fbzMode[10] && aux_ok)) ws <= W_RUN;
-        else wr_set <= nxt3(wr_set);                    // nothing to write
+        else wr_set <= wr_set + 3'd1;                   // nothing to write
     end
     W_RUN: begin
-        wc_v <= 1'b1; wz_v <= 1'b1;
+        wc_v <= !wr_steal; wz_v <= !wr_steal;           // q16 took the read: read it again
         wc_a <= wc_next; wz_a <= wz_next;
         if (wc_acc && wc_a + 9'd1 == ww1) wc_on <= 1'b0;
         if (wz_acc && wz_a + 9'd1 == ww1) wz_on <= 1'b0;
-        if (wr_finish) begin ws <= W_IDLE; wr_set <= nxt3(wr_set); end
+        if (wr_finish) begin ws <= W_IDLE; wr_set <= wr_set + 3'd1; end
     end
     default: ws <= W_IDLE;
     endcase
@@ -1021,20 +1071,20 @@ always_comb begin
     x0 = s_x0[wr_set]; x1 = s_x1[wr_set];
     io_memFbColorWrite_read = 1'b0;
     io_memFbColorWrite_write = ws == W_RUN && wc_on && wc_v;
-    io_memFbColorWrite_address = FB_BASE + {11'h0, s_crw[wr_set]} + {21'h0, ww0, 2'b00};
+    io_memFbColorWrite_address = FB_BASE + {11'h0, wr_crw} + {21'h0, ww0, 2'b00};
     io_memFbColorWrite_burstCount = {2'b0, ww1 - ww0 + 9'd1};
     io_memFbColorWrite_byteEnable = pix_be(wc_a, x0, x1);
     io_memFbColorWrite_byteEnableHi = pix_be(wc_a + 9'd1, x0, x1);
-    io_memFbColorWrite_writeData = lcb_q[wr_set][31:0];
-    io_memFbColorWrite_writeDataHi = lcb_q[wr_set][63:32];
+    io_memFbColorWrite_writeData = lcb_q[lb_ram(wr_set)][31:0];
+    io_memFbColorWrite_writeDataHi = lcb_q[lb_ram(wr_set)][63:32];
     io_memFbAuxWrite_read = 1'b0;
     io_memFbAuxWrite_write = ws == W_RUN && wz_on && wz_v;
-    io_memFbAuxWrite_address = FB_BASE + {11'h0, s_zrw[wr_set]} + {21'h0, ww0, 2'b00};
+    io_memFbAuxWrite_address = FB_BASE + {11'h0, wr_zrw} + {21'h0, ww0, 2'b00};
     io_memFbAuxWrite_burstCount = {2'b0, ww1 - ww0 + 9'd1};
     io_memFbAuxWrite_byteEnable = pix_be(wz_a, x0, x1);
     io_memFbAuxWrite_byteEnableHi = pix_be(wz_a + 9'd1, x0, x1);
-    io_memFbAuxWrite_writeData = lzb_q[wr_set][31:0];
-    io_memFbAuxWrite_writeDataHi = lzb_q[wr_set][63:32];
+    io_memFbAuxWrite_writeData = lzb_q[lb_ram(wr_set)][31:0];
+    io_memFbAuxWrite_writeDataHi = lzb_q[lb_ram(wr_set)][63:32];
 end
 
 logic        sets_free;

@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--frames", type=int, default=1)
     ap.add_argument("--nvram", default=str(REPO / "debug" / "nvram"))
     ap.add_argument("--events", default="")
+    ap.add_argument("--pokes", default="", help="from:addr:value,... bytes written every frame (cheats)")
     a = ap.parse_args()
 
     mame_dir, exe = mame_paths()
@@ -39,7 +40,8 @@ def main():
     if Path(a.nvram).exists():
         shutil.copytree(Path(a.nvram), out / "nvram")
     env = dict(os.environ, CORE_OUT=out.as_posix(), CORE_FRAME=str(a.frame), CORE_FRAMES=str(a.frames),
-               CORE_EVENTS=a.events, CORE_SCRIPT=str(REPO / "scripts" / "mame" / "voodoowin.lua"))
+               CORE_EVENTS=a.events, CORE_POKES=a.pokes,
+               CORE_SCRIPT=str(REPO / "scripts" / "mame" / "voodoowin.lua"))
     cmd = mame_cmd(exe, a.game, None, mame_dir,
                    ["-nodrc", "-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg"),
                     "-seconds_to_run", str(a.frame // 50 + a.frames + 60)])

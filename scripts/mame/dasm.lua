@@ -15,7 +15,7 @@ dasm_subs[#dasm_subs + 1] = emu.add_machine_frame_notifier(function()
     local dbg = m.debugger
     dbg.visible_cpu = m.devices[":" .. cpu]
     for s, l in ranges:gmatch("(%x+):(%x+)") do
-        dbg:command(string.format("dasm %s/dasm_%s.txt,%s,%s,0,0,%s", out, s, s, l, cpu))
+        dbg:command(string.format("dasm %s/dasm_%s.txt,%s,%s,0,%s", out, s, s, l, cpu))
     end
     print("DASM_DONE")
     m:exit()

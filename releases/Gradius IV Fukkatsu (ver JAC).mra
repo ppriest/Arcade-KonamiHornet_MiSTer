@@ -37,7 +37,7 @@
         </interleave>
         <!-- M48T58: the set's NVRAM image -->
         <part name="m48t58y-70pc1_jac" crc="935f9d05"/>
-        <!-- the sound board (sw/arcsnd): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         <part name="837a08.7s" crc="c3a7ff56"/>
         <part name="837a09.16p" crc="fb8f3dc2"/>
         <part name="837a10.14p" crc="1419cad2"/>

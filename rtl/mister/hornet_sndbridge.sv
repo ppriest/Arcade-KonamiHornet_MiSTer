@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The sound board on the HPS (sw/arcsnd, hornet): a block of DDR3 shared with the server, written
+// The sound board on the HPS (MiSTer_ArcadeSoundServer, src/hornet): a block of DDR3 shared with the server, written
 // and read through a wide hornet_ddr3 master. Little-endian 64-bit words, byte offsets from SHM:
 //
 //   +0x00  "HRNS", version 1                                          the FPGA, every BEAT
