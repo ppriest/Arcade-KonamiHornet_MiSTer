@@ -79,5 +79,5 @@
         <dip name="Monitor Type" bits="0" ids="15KHz,24KHz"/>
     </switches>
 
-    <buttons names="Shot,Missile,Power Up,Start,Coin,Service,Test" default="A,B,X,Start,Select,R,L"/>
+    <buttons names="Power Up,Shot,Missile,Start,Coin,Service,Test" default="A,B,X,Start,Select,R,L"/>
 </misterromdescription>
