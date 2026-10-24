@@ -3,8 +3,8 @@
 A MiSTer FPGA core for Konami's Hornet arcade hardware (MAME's `konami/hornet.cpp`), built with
 Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: in development. Gradius IV boots and plays on a DE10-nano, 2D and 3D
-drawn, with sound from the MiSTer's ARM; Doensa't run full-speed on many levels **
+**Status: in development**. Gradius IV boots and plays on a DE10-nano, 2D and 3D
+drawn, with sound from the MiSTer's ARM. Doesn't run full-speed on many levels
 
 ## Contents
 
