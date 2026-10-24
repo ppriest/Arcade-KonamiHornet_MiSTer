@@ -15,6 +15,7 @@ drawn, with sound from the MiSTer's ARM. Doesn't run full-speed on many levels
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
+  - [Floorplan](#floorplan)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
 - [Controls](#controls)
@@ -84,6 +85,18 @@ visible area is 512×384. MAME's `set_raw()` declares 644 dots per line (24.84 k
 doubts its own input clock; at run time MAME picks the line rate from the Voodoo's registers and
 lands on 25 kHz for Gradius IV. The sync pulses are placed by the core, not from the Voodoo's
 registers (`docs/HACKS.md`). There is no PCB measurement.
+
+### Floorplan
+
+Where the logic sits on the Cyclone V, read from the compiled design with `scripts/floorplan.py`
+(blocks defined in `scripts/floorplan.json`; per-block counts in `docs/floorplan/KonamiHornet_groups.md`).
+One cell per LAB, M10K or DSP site, coloured by the block owning most of it, brighter when fuller.
+The thin columns are M10K and DSP; the empty area at the top right is the HPS; grey is the MiSTer
+framework. LUT counts are combinational cells, two per ALM.
+
+Revision `KonamiHornet` at `bde515a` (the 20261024 alpha), fitted 24 Oct 2026:
+
+![Floorplan of KonamiHornet](docs/floorplan/KonamiHornet.png)
 
 ## Screenshots
 

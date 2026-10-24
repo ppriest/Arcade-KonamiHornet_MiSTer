@@ -1,0 +1,15 @@
+{
+ "groups": [
+  {"name": "SHARC", "match": "board\\|dsp", "color": "#e6194b"},
+  {"name": "PPC403 + icache", "match": "board\\|(ppc|u_icache)", "color": "#4363d8"},
+  {"name": "Voodoo (vraster)", "match": "board\\|voodoo", "color": "#3cb44b"},
+  {"name": "K037122 + video", "match": "board\\|(video|g_ksram)", "color": "#ffe119"},
+  {"name": "Shared RAM, NVRAM", "match": "board\\|(u_shram|kram|u_nvram|u_rtc)", "color": "#f58231"},
+  {"name": "Board glue", "match": "board", "color": "#bfef45"},
+  {"name": "SDRAM ports", "match": "^emu\\|sdram", "color": "#911eb4"},
+  {"name": "DDR3 masters", "match": "^emu\\|ddr3", "color": "#f032e6"},
+  {"name": "Sound bridge", "match": "^emu\\|sndbridge", "color": "#42d4f4"},
+  {"name": "ROM loader", "match": "^emu\\|rom_loader", "color": "#9a6324"},
+  {"name": "hps_io", "match": "^emu\\|hps_io", "color": "#2f6f6a"}
+ ]
+}
