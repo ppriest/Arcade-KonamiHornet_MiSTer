@@ -81,7 +81,7 @@ Sets with an `.mra` in `releases/` (clones in `releases/_alternatives/_Gradius I
 | 3dfx Voodoo 1 | rasteriser, 2 MB frame buffer, 4 MB texture memory | written here (`vraster`) for the subset Gradius IV uses, from MAME's model; frame and texture memory in DDR3 |
 | K037122 | tilemap overlay and the 8192-colour palette | written here from MAME's model; the overlay's rotate and zoom are built, Gradius IV does not use them |
 | K033906 | the Voodoo's PCI configuration | written here from MAME's model |
-| M48T58 | 8 KB NVRAM and clock | written here; the clock from MAME's timekeeper, set from the MiSTer's time; saved to the `.nvm` file |
+| M48T58 | 8 KB NVRAM and clock | written here; the clock from MAME's timekeeper, set from the MiSTer's time; saved to the `.nvm` file. The `.mra`'s image carries the settings the game's first boot writes, so a first boot goes straight to the game |
 | konppc glue, sysreg | shared RAM, comm registers, interrupts, inputs | written here from `hornet.cpp` and `konppc.cpp` |
 | MC68000, K056800, RF5C400 | sound | on the HPS ([MiSTer_ArcadeSoundServer](https://github.com/ppriest/MiSTer_ArcadeSoundServer)): Musashi and MAME's RF5C400 and board logic; `rtl/mister/hornet_sndbridge.sv` carries the PPC's writes and the board's replies through DDR3 |
 | X76F041 | security EEPROM | not built |
@@ -189,7 +189,6 @@ Known issues:
 - **In-game sections slow down**, to half rate at times, less at 15 kHz than at 24 kHz. Probes on
   the board point at three limits in different scenes: the PPC's memory port (no data cache), the
   SHARC's geometry, and the Voodoo's texture fills on full-screen layers.
-- **The first boot stops at "RTC CHECKSUM ERROR! ... PRESS TEST SWITCH TO CONTINUE"**, as MAME's does with the set's NVRAM image: press Test (L). The settings are then saved to the `.nvm` file.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be
 right. `docs/HACKS.md` lists this core's own approximations. `docs/ROADMAP.md` is the plan and its
