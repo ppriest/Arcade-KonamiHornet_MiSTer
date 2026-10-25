@@ -418,12 +418,12 @@ always_ff @(posedge clk) begin
     T_SPAN: if (!span_hold) begin
         // the span start's parameters: the row's + (x0 - ax) * dpdx; an empty row leaves its
         // first product unused. After the fourth the span is pending (e_*) and the loop goes on;
-        // a set holds 64 beats, so a longer span goes as its first 64 and the rest from T_SPAN again
+        // a set holds SBEATS beats, so a longer span goes as its first SBEATS and the rest from T_SPAN again
         pk <= pk + 2'd1;
         if (pk == 2'd0 && (cx0 >= cx1 || row_skip)) ts <= T_NEXT;
         else if (pk == 2'd3) begin
             logic [9:0] xb;
-            xb = {sx0[9:2] + 8'd64, 2'b00};
+            xb = {sx0[9:2] + 8'(SBEATS), 2'b00};
             e_v <= 1'b1; e_x0 <= sx0; e_sy <= s_scry;
             if (sx1 > xb) begin
                 e_x1 <= xb; e_last <= 1'b0;
@@ -449,21 +449,27 @@ end
 // ---------------------------------------------------------------- line-buffer sets
 
 // A set: a span's colour and depth rows, a beat (four pixels) an entry from the span's first beat.
-// Eight sets share four RAM pairs, set k in pair k[1:0]'s half k[2] of 64 entries (T_SPAN splits a
-// longer span), so that short spans have twice the sets in flight. The halves share the RAMs'
+// NSET sets share four RAM pairs of 128 entries, set k in pair k[1:0]'s part k[SB-1:2] of SBEATS
+// entries (T_SPAN splits a longer span): a short span holds a set for the read's latency and the
+// pipeline's depth, so the sets in flight set the rate of short spans. The parts share the RAMs'
 // ports, a clock at a time: on port A q18's pixel goes first and the reader's beat for that RAM
 // waits in hornet_ddr3 (readReady); on port B q16's read goes first and the writer reads again.
 typedef enum logic [2:0] { S_FREE, S_READ, S_READY, S_PROC, S_DONE, S_WRITE } sstate_t;
-localparam int NSET = 8;
-function automatic logic [1:0] lb_ram(input logic [2:0] k);
+// set index bits: 4 (16 sets) took the lava's (44400) second frame from 513k to 439k busy clocks in
+// board_tb, for about 395 ALMs more (rtl/synth_board estimate), which the device does not have
+localparam int SB = 3;
+localparam int NSET = 1 << SB;
+localparam int EB = 9 - SB;                            // a set's entry bits
+localparam int SBEATS = 1 << EB;
+function automatic logic [1:0] lb_ram(input logic [SB-1:0] k);
     return k[1:0];
 endfunction
-function automatic logic lb_half(input logic [2:0] k);
-    return k[2];
+function automatic logic [SB-3:0] lb_part(input logic [SB-1:0] k);
+    return k[SB-1:2];
 endfunction
 sstate_t     st [NSET];
 logic [9:0]  s_x0 [NSET], s_x1 [NSET];
-logic [2:0]  rd_set, px_set, wr_set;                   // next set for each stage, in turn
+logic [SB-1:0] rd_set, px_set, wr_set;                 // next set for each stage, in turn
 
 // RAM ports: A writes (reader beats, pipeline pixels), B reads (pipeline, writer); colour and
 // depth addressed apart, so that their streams run side by side. An entry is a 64-bit beat, two
@@ -488,11 +494,11 @@ end endgenerate
 localparam int PW = 240;                               // 10 + 32 + 3 * 64, to whole bytes
 logic [PW-1:0] par_q;
 logic [47:0] wrow_q;
-logic [2:0]  px_nx, wr_nx;
+logic [SB-1:0] px_nx, wr_nx;
 logic [20:0] rd_crw, rd_zrw;
-hornet_sdpram #(.AW(3), .DW(PW)) u_par (.clk, .a_addr(rd_set), .a_be({(PW / 8){sd_take}}),
+hornet_sdpram #(.AW(SB), .DW(PW)) u_par (.clk, .a_addr(rd_set), .a_be({(PW / 8){sd_take}}),
     .a_wdata(PW'({sd_scry, sd_a, sd_w, sd_s, sd_t})), .b_addr(px_nx), .b_rdata(par_q));
-hornet_sdpram #(.AW(3), .DW(48)) u_wrow (.clk, .a_addr(rd_set), .a_be({6{sd_take}}),
+hornet_sdpram #(.AW(SB), .DW(48)) u_wrow (.clk, .a_addr(rd_set), .a_be({6{sd_take}}),
     .a_wdata(48'({sd_crow, sd_zrow})), .b_addr(wr_nx), .b_rdata(wrow_q));
 always_ff @(posedge clk) if (sd_take) begin rd_crw <= sd_crow; rd_zrw <= sd_zrow; end
 wire [20:0] wr_crw = wrow_q[41:21], wr_zrw = wrow_q[20:0];
@@ -506,7 +512,7 @@ wire [20:0] wr_crw = wrow_q[41:21], wr_zrw = wrow_q[20:0];
 typedef enum logic [0:0] { R_IDLE, R_REQ } rstate_t;
 rstate_t     rs;
 logic        rz_iss, rc_iss;                           // this span's requests are accepted
-logic [2:0]  zd_set, cd_set;                           // the set each port's data is for
+logic [SB-1:0] zd_set, cd_set;                           // the set each port's data is for
 logic [8:0]  zd_n, cd_n;                               // the next word, from the span's first
 logic [NSET-1:0] zdn, cdn;                             // a set's depth, colour rows are in
 
@@ -528,7 +534,7 @@ assign sd_take = rs == R_IDLE && sd_v && st[rd_set] == S_FREE;
 
 always_ff @(posedge clk) begin
     if (reset) begin
-        rs <= R_IDLE; rd_set <= 3'd0; zd_set <= 3'd0; cd_set <= 3'd0; zd_n <= 9'd0; cd_n <= 9'd0;
+        rs <= R_IDLE; rd_set <= '0; zd_set <= '0; cd_set <= '0; zd_n <= 9'd0; cd_n <= 9'd0;
         zdn <= '0; cdn <= '0;
         for (int k = 0; k < NSET; k++) st[k] <= S_FREE;
     end else begin
@@ -542,17 +548,17 @@ always_ff @(posedge clk) begin
         R_REQ: begin
             if (zacc) rz_iss <= 1'b1;
             if (cacc) rc_iss <= 1'b1;
-            if ((rz_iss || zacc) && (rc_iss || cacc)) begin rd_set <= rd_set + 3'd1; rs <= R_IDLE; end
+            if ((rz_iss || zacc) && (rc_iss || cacc)) begin rd_set <= rd_set + 1'd1; rs <= R_IDLE; end
         end
         default: rs <= R_IDLE;
         endcase
         // a beat (two words) a clock
         if (zd_v) begin
-            if (rw0[zd_set] + zd_n + 9'd1 == rw1[zd_set]) begin zdn[zd_set] <= 1'b1; zd_set <= zd_set + 3'd1; zd_n <= 9'd0; end
+            if (rw0[zd_set] + zd_n + 9'd1 == rw1[zd_set]) begin zdn[zd_set] <= 1'b1; zd_set <= zd_set + 1'd1; zd_n <= 9'd0; end
             else zd_n <= zd_n + 9'd2;
         end
         if (cd_v) begin
-            if (rw0[cd_set] + cd_n + 9'd1 == rw1[cd_set]) begin cdn[cd_set] <= 1'b1; cd_set <= cd_set + 3'd1; cd_n <= 9'd0; end
+            if (rw0[cd_set] + cd_n + 9'd1 == rw1[cd_set]) begin cdn[cd_set] <= 1'b1; cd_set <= cd_set + 1'd1; cd_n <= 9'd0; end
             else cd_n <= cd_n + 9'd2;
         end
         for (int k = 0; k < NSET; k++)
@@ -602,17 +608,17 @@ localparam int TSW = 2 * TCB;
 
 logic        stall;                                    // a cache fill is under way
 logic        px_run;                                   // the iterators are issuing a span
-logic [2:0]  p0_set;
+logic [SB-1:0] p0_set;
 logic [9:0]  p0_x, p0_sy;
 logic signed [31:0] p0_a;
 logic signed [63:0] p0_w, p0_s, p0_t;
 logic        px_start, px_finish;
-logic [2:0]  px_fin_set;
+logic [SB-1:0] px_fin_set;
 
 typedef struct packed {
     logic        v, last;
-    logic [2:0]  set;
-    logic [5:0]  o;                                    // the line-buffer entry: beat from the set's first
+    logic [SB-1:0] set;
+    logic [EB-1:0] o;                                    // the line-buffer entry: beat from the set's first
     logic [9:0]  x, sy;
     logic [7:0]  ia;                                   // iterated A, clamped
     logic [15:0] wf;                                   // wfloat, from q3
@@ -620,10 +626,10 @@ typedef struct packed {
 pm_t m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17, m18;
 
 assign px_start = !px_run && st[px_set] == S_READY && !stall;
-assign px_nx = (!stall && px_run && p0_x + 10'd1 == s_x1[p0_set]) ? px_set + 3'd1 : px_set;
+assign px_nx = (!stall && px_run && p0_x + 10'd1 == s_x1[p0_set]) ? px_set + 1'd1 : px_set;
 
 always_ff @(posedge clk) begin
-    if (reset) begin px_run <= 1'b0; px_set <= 3'd0; end
+    if (reset) begin px_run <= 1'b0; px_set <= '0; end
     else if (!stall) begin
         if (px_start) begin
             px_run <= 1'b1; p0_set <= px_set;
@@ -632,7 +638,7 @@ always_ff @(posedge clk) begin
         end else if (px_run) begin
             p0_x <= p0_x + 10'd1;
             p0_a <= p0_a + (px_dadx <<< 8); p0_w <= p0_w + px_dwdx; p0_s <= p0_s + px_dsdx; p0_t <= p0_t + px_dtdx;
-            if (p0_x + 10'd1 == s_x1[p0_set]) begin px_run <= 1'b0; px_set <= px_set + 3'd1; end
+            if (p0_x + 10'd1 == s_x1[p0_set]) begin px_run <= 1'b0; px_set <= px_set + 1'd1; end
         end
     end
 end
@@ -695,7 +701,7 @@ always_ff @(posedge clk) if (!stall) begin
     // q1
     m1.v <= px_run; m1.last <= px_run && p0_x + 10'd1 == s_x1[p0_set];
     m1.set <= p0_set; m1.x <= p0_x; m1.sy <= p0_sy;
-    m1.o <= 6'(p0_x[9:2] - s_x0[p0_set][9:2]);
+    m1.o <= EB'(p0_x[9:2] - s_x0[p0_set][9:2]);
     m1.ia <= pclamp8(12'(p0_a >>> 20)); m1.wf <= 16'h0;
     w1 <= p0_w; s1 <= p0_s; t1 <= p0_t;
     // q2
@@ -1000,10 +1006,10 @@ logic [15:0] dpix17, dz17;
 
 always_comb
     for (int k = 0; k < 4; k++) begin
-        lbc_addr[k] = (ws == W_RUN && lb_ram(wr_set) == 2'(k) && !wr_steal) ? {lb_half(wr_set), 6'((wc_next - ww0) >> 1)}
-                                                                            : {lb_half(m16.set), m16.o};
-        lbz_addr[k] = (ws == W_RUN && lb_ram(wr_set) == 2'(k) && !wr_steal) ? {lb_half(wr_set), 6'((wz_next - ww0) >> 1)}
-                                                                            : {lb_half(m16.set), m16.o};
+        lbc_addr[k] = (ws == W_RUN && lb_ram(wr_set) == 2'(k) && !wr_steal) ? {lb_part(wr_set), EB'((wc_next - ww0) >> 1)}
+                                                                            : {lb_part(m16.set), m16.o};
+        lbz_addr[k] = (ws == W_RUN && lb_ram(wr_set) == 2'(k) && !wr_steal) ? {lb_part(wr_set), EB'((wz_next - ww0) >> 1)}
+                                                                            : {lb_part(m16.set), m16.o};
     end
 
 always_comb begin
@@ -1052,24 +1058,24 @@ always_comb
         lac_addr[k] = 7'h0; laz_addr[k] = 7'h0;
         lca_be[k] = 8'h0; lza_be[k] = 8'h0; lca_d[k] = 64'h0; lza_d[k] = 64'h0;
         if (m18.v && lb_ram(m18.set) == 2'(k) && pb18.ok) begin
-            lac_addr[k] = {lb_half(m18.set), m18.o}; laz_addr[k] = {lb_half(m18.set), m18.o};
+            lac_addr[k] = {lb_part(m18.set), m18.o}; laz_addr[k] = {lb_part(m18.set), m18.o};
             lca_d[k] = {4{px_color}}; lza_d[k] = {4{pb18.depth}};
             lca_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
             lza_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
         end
         if (zd_v && lb_ram(zd_set) == 2'(k)) begin
-            laz_addr[k] = {lb_half(zd_set), 6'(zd_n >> 1)};
+            laz_addr[k] = {lb_part(zd_set), EB'(zd_n >> 1)};
             lza_d[k] = {io_memFbAuxRead_readDataHi, io_memFbAuxRead_readData}; lza_be[k] = 8'hFF;
         end
         if (cd_v && lb_ram(cd_set) == 2'(k)) begin
-            lac_addr[k] = {lb_half(cd_set), 6'(cd_n >> 1)};
+            lac_addr[k] = {lb_part(cd_set), EB'(cd_n >> 1)};
             lca_d[k] = {io_memFbColorRead_readDataHi, io_memFbColorRead_readData}; lca_be[k] = 8'hFF;
         end
     end
 
 // a beat may come next clock unless q17's pixel will be written (q18) to the RAM it may be for
-assign io_memFbColorRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(cd_set) || lb_ram(m17.set) == lb_ram(cd_set + 3'd1)));
-assign io_memFbAuxRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(zd_set) || lb_ram(m17.set) == lb_ram(zd_set + 3'd1)));
+assign io_memFbColorRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(cd_set) || lb_ram(m17.set) == lb_ram(cd_set + 1'd1)));
+assign io_memFbAuxRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(zd_set) || lb_ram(m17.set) == lb_ram(zd_set + 1'd1)));
 
 assign px_finish = m18.v && m18.last;
 assign px_fin_set = m18.set;
@@ -1083,7 +1089,7 @@ assign px_fin_set = m18.set;
 typedef enum logic [0:0] { W_IDLE, W_RUN } wstate_t;
 wstate_t     ws;
 logic        wr_start, wr_finish;
-logic [2:0]  wr_fin_set;
+logic [SB-1:0] wr_fin_set;
 logic [8:0]  ww0, ww1;
 logic [8:0]  wc_a, wz_a, wc_next, wz_next;             // the word each stream presents; read next
 logic        wc_v, wz_v;                               // the line buffer's output holds it
@@ -1094,7 +1100,7 @@ wire         wz_acc = ws == W_RUN && wz_on && wz_v && io_memFbAuxWrite_waitReque
 
 assign wr_start = ws == W_IDLE && st[wr_set] == S_DONE;
 assign wr_nx = (ws == W_IDLE ? wr_start && !fbzMode[9] && !(fbzMode[10] && aux_ok) : ws == W_RUN && wr_finish)
-               ? wr_set + 3'd1 : wr_set;
+               ? wr_set + 1'd1 : wr_set;
 assign wr_fin_set = wr_set;
 assign wc_next = wc_acc ? wc_a + 9'd2 : wc_a;
 assign wz_next = wz_acc ? wz_a + 9'd2 : wz_a;
@@ -1102,7 +1108,7 @@ assign wr_finish = (ws == W_RUN && !(wc_on && !(wc_acc && wc_a + 9'd1 == ww1)) &
                    (wr_start && !fbzMode[9] && !(fbzMode[10] && aux_ok));
 
 always_ff @(posedge clk) begin
-    if (reset) begin ws <= W_IDLE; wr_set <= 3'd0; end
+    if (reset) begin ws <= W_IDLE; wr_set <= '0; end
     else case (ws)
     W_IDLE: if (wr_start) begin
         ww0 <= rw0[wr_set]; ww1 <= rw1[wr_set];
@@ -1110,14 +1116,14 @@ always_ff @(posedge clk) begin
         wc_v <= 1'b0; wz_v <= 1'b0;
         wc_on <= fbzMode[9]; wz_on <= fbzMode[10] && aux_ok;
         if (fbzMode[9] || (fbzMode[10] && aux_ok)) ws <= W_RUN;
-        else wr_set <= wr_set + 3'd1;                   // nothing to write
+        else wr_set <= wr_set + 1'd1;                   // nothing to write
     end
     W_RUN: begin
         wc_v <= !wr_steal; wz_v <= !wr_steal;           // q16 took the read: read it again
         wc_a <= wc_next; wz_a <= wz_next;
         if (wc_acc && wc_a + 9'd1 == ww1) wc_on <= 1'b0;
         if (wz_acc && wz_a + 9'd1 == ww1) wz_on <= 1'b0;
-        if (wr_finish) begin ws <= W_IDLE; wr_set <= wr_set + 3'd1; end
+        if (wr_finish) begin ws <= W_IDLE; wr_set <= wr_set + 1'd1; end
     end
     default: ws <= W_IDLE;
     endcase

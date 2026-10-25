@@ -64,7 +64,8 @@ module hornet_ddr3 #(
     output logic                 DDRAM_WE,
 
     output logic [23:0]          dbg,
-    output logic [77:0]          dbg_cmd       // the stp revision's probe K: the command on the port
+    output logic [77:0]          dbg_cmd,      // the stp revision's probe K: the command on the port
+    output logic [42:0]          dbg_ret       // ... and the return path's head tag and pointers
 );
 
 localparam int MW = $clog2(N);
@@ -177,6 +178,14 @@ wire  rd_go = as == A_CMD && !drain && c_rd && rd_room;     // a read issued: it
 // the command ends this clock: a read on the port, or a write burst's last beat leaving
 wire  c_end = (as == A_RD && !DDRAM_BUSY) || (as == A_WR && w_out && !DDRAM_BUSY && b_left == 8'd1);
 wire  take = (as == A_IDLE || c_end) && pick_v && !drain;
+// a command goes to the port as it is chosen, without A_CMD: a write, or a read of 128 words or
+// fewer with 64 beats of FIFO room and a tag free (the rest wait in A_CMD for room)
+logic [N-1:0] m_small;
+always_comb for (int k = 0; k < N; k++) m_small[k] = m_burst[k] <= 11'd128;
+wire  rd_fit = int'(r_out) <= (1 << RAW) - 64 && tq_wp - tq_rp < 5'd15;
+wire  go_now = take && (m_write[pick] || (m_small[pick] && rd_fit));
+wire  rd_now = go_now && m_read[pick];
+wire [7:0] p_beats = beats(m_addr[pick], m_burst[pick]);
 
 // a read accepted as it is chosen; write beats the master offers and the packer takes this clock
 logic w_take;
@@ -196,7 +205,7 @@ always_ff @(posedge clk) begin
         c_rd <= m_read[pick]; c_addr <= m_addr[pick]; c_burst <= m_burst[pick];
     end
     case (as)
-    A_IDLE: if (take) as <= A_CMD;
+    A_IDLE: if (take) as <= go_now ? (m_read[pick] ? A_RD : A_WR) : A_CMD;
     A_CMD:
         if (drain) as <= A_IDLE;                    // not on the port yet
         else if (c_rd) begin
@@ -217,7 +226,7 @@ always_ff @(posedge clk) begin
             w_lo <= 32'h0; w_lobe <= 4'h0;
             as <= A_WR;
         end
-    A_RD: if (!DDRAM_BUSY) as <= take ? A_CMD : A_IDLE;
+    A_RD: if (!DDRAM_BUSY) as <= take ? (go_now ? (m_read[pick] ? A_RD : A_WR) : A_CMD) : A_IDLE;
     A_WR: begin
         if (w_take && WIDE[g]) begin
             w_left <= w_left - 11'd2;
@@ -238,11 +247,26 @@ always_ff @(posedge clk) begin
         if (drain && !w_take && b_left != 0 && (!w_out || !DDRAM_BUSY) && !(w_out && b_left == 8'd1)) begin
             DDRAM_WE <= 1'b1; w_out <= 1'b1; DDRAM_DIN <= 64'h0; DDRAM_BE <= 8'h0;
         end
-        if (c_end) as <= take ? A_CMD : A_IDLE;
+        if (c_end) as <= take ? (go_now ? (m_read[pick] ? A_RD : A_WR) : A_CMD) : A_IDLE;
         else if (b_left == 0 && !w_out) as <= A_IDLE;
     end
     default: as <= A_IDLE;
     endcase
+    // the chosen command on the port now (after the case: it overrides the last one's ending)
+    if (go_now) begin
+        DDRAM_ADDR <= m_addr[pick][31:3];
+        DDRAM_BURSTCNT <= p_beats;
+        if (m_read[pick]) begin
+            DDRAM_RD <= 1'b1;
+            tq[tq_wp[3:0]] <= '{m: pick, hi: m_addr[pick][2], n: m_burst[pick]};
+            tq_wp <= tq_wp + 1'd1;
+        end else begin
+            w_left <= m_burst[pick];
+            b_left <= p_beats;
+            w_hold <= m_addr[pick][2];
+            w_lo <= 32'h0; w_lobe <= 4'h0;
+        end
+    end
     if (reset) begin as <= A_IDLE; DDRAM_RD <= 1'b0; DDRAM_WE <= 1'b0; w_out <= 1'b0; tq_wp <= '0; rr <= '0; end
 end
 
@@ -265,6 +289,7 @@ end
 assign idle = as == A_IDLE && r_out == '0 && !t_on && !tq_any;
 assign dbg_cmd = {DDRAM_BUSY, DDRAM_RD, DDRAM_WE, w_out, b_left, w_left, DDRAM_BURSTCNT, c_addr[31:3],
                   c_rd, 3'(g), 2'(as), tq_any, t_on, 10'(r_out)};
+assign dbg_ret = {4'(t_cur.m), t_left, tq_wp, tq_rp, 9'(rf_wp), 9'(rf_rp)};
 
 // debug (the stp revision's probe D): {a read's latency valid, its latency (accepted to first beat,
 // saturating at 2047), a command chosen, its master, a beat in, a write beat out, a read accepted, a read
@@ -298,6 +323,7 @@ always_ff @(posedge clk) begin
     logic [RAW+1:0] o;
     o = r_out;
     if (rd_go) o = o + (RAW+2)'(beats(c_addr, c_burst));
+    if (rd_now) o = o + (RAW+2)'(p_beats);
     if (pop_beat) o = o - 1'd1;
     r_out <= o;
     if (reset) r_out <= '0;

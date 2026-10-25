@@ -296,7 +296,7 @@ int main(int argc, char **argv) {
     unsigned long long dd[15] = {0}, dc[8] = {0};
     bool tf_q = false;
     uint64_t tx_seq[7] = {}, tx_gap[5] = {};
-    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_hs[4] = {}, vp_fl[5] = {};
+    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_hs[4] = {}, vp_fl[5] = {}, vp_wr[5] = {};
     if ((s = Verilated::commandArgsPlusMatch("ddrlat=")) && *s) ddr.lat = atoi(s + 8);
     if ((s = Verilated::commandArgsPlusMatch("ddrbusy=")) && *s) ddr.busy_pct = atoi(s + 9);
     // +ringoff: vraster's memory FIFO without its DDR3 ring (the stp revision's debug switch)
@@ -1099,6 +1099,16 @@ int main(int argc, char **argv) {
                 unsigned rd = t->rootp->tb_board__DOT__dm_read, wn = t->rootp->tb_board__DOT__dm_waitn;
                 unsigned rv = t->rootp->tb_board__DOT__dm_rvalid;
                 if (rd & wn & 8) vp_hs[0]++;
+                // ... the span writer's clocks: idle with a set to start, its line-buffer read not in
+                // hand (first read, or q16 took the port), writing; and spans written
+                {
+                    auto *v = t->rootp;
+                    unsigned ws = v->tb_board__DOT__dut__DOT__voodoo__DOT__ws & 1;
+                    bool wcv = v->tb_board__DOT__dut__DOT__voodoo__DOT__wc_v, wcon = v->tb_board__DOT__dut__DOT__voodoo__DOT__wc_on;
+                    if (ws == 0 && v->tb_board__DOT__dut__DOT__voodoo__DOT__wr_start) { vp_wr[0]++; vp_wr[4]++; }
+                    else if (ws == 1 && wcon && !wcv) vp_wr[1]++;
+                    else if (ws == 1) vp_wr[2]++;
+                }
                 if (rd & wn & 16) vp_hs[1]++;
                 if (rv & 8) vp_hs[2]++;
                 if (rv & 16) vp_hs[3]++;
@@ -1250,6 +1260,10 @@ int main(int argc, char **argv) {
                             (unsigned long long)vp_px[0], (unsigned long long)vp_px[1], (unsigned long long)vp_px[2],
                             (unsigned long long)vp_px[3]);
                 if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d span writer: %llu spans; clocks starting %llu, reading the line buffer %llu, "
+                            "writing %llu\n", frame, (unsigned long long)vp_wr[4],
+                            (unsigned long long)vp_wr[0], (unsigned long long)vp_wr[1], (unsigned long long)vp_wr[2]);
+                    memset(vp_wr, 0, sizeof vp_wr);
                     fprintf(stderr, "frame %d frame-buffer reads: colour %llu (%llu beats), depth %llu (%llu beats)\n", frame,
                             (unsigned long long)vp_hs[0], (unsigned long long)vp_hs[2], (unsigned long long)vp_hs[1],
                             (unsigned long long)vp_hs[3]);

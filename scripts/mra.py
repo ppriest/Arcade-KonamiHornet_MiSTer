@@ -187,6 +187,15 @@ def build_image(mra_path, zip_path, size=None):
                 bits = int(el.get("output"))
                 parts = [(_part_data(z, p), p.get("map")) for p in el]
                 out += interleave(parts, bits)
+            elif el.tag == "patch":
+                # Main_MiSTer's rom_patch: over the bytes loaded so far, at its place in the
+                # document; one past the end is dropped there without a word, an error here
+                data, at = _literal_bytes(el.text), int(el.get("offset"), 0)
+                if el.get("operation"):
+                    raise ValueError("<patch operation=...> is not modelled")
+                if at + len(data) > len(out):
+                    raise ValueError(f"<patch offset={el.get('offset')}> ends past the {len(out):#x} bytes loaded before it")
+                out[at:at + len(data)] = data
             else:
                 raise ValueError(f"unexpected element <{el.tag}> in <rom index=0>")
     finally:

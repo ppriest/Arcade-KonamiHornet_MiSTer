@@ -156,7 +156,19 @@ pll pll
 	.locked(pll_locked)
 );
 
-wire reset = RESET | status[0] | buttons[1];
+// pll_locked and RESET are asynchronous to clk_sys. As a synchronous reset, an edge can reach one
+// register's data and its enable on different clocks: probe K read hornet_ddr3 waiting on a read it never
+// issued, the board held in reset for good, in some placements and not others. Both come through these:
+// sys_reset set while the PLL is unlocked and released on a clk_sys edge, RESET two flops in
+reg [2:0] lock_q = 3'b000;
+always @(posedge clk_sys or negedge pll_locked)
+	if (!pll_locked) lock_q <= 3'b000;
+	else lock_q <= {lock_q[1:0], 1'b1};
+wire sys_reset = !lock_q[2];
+reg [1:0] hps_rst_q = 2'b11;
+always @(posedge clk_sys) hps_rst_q <= {hps_rst_q[0], RESET};
+
+wire reset = hps_rst_q[1] | status[0] | buttons[1];
 
 ///////////////////////   DOWNLOAD   /////////////////////////////
 
@@ -214,7 +226,7 @@ always @(posedge clk_sys) begin
 		cht_top <= ioctl_addr[8:0] + 9'd1;
 	end
 	if (!cht_dl && cht_dl_q) cht_n <= cht_top[8] ? 5'd16 : {1'b0, cht_top[7:4]};
-	if (!pll_locked) cht_n <= 5'd0;
+	if (sys_reset) cht_n <= 5'd0;
 end
 
 // the image's bytes: ROM halfwords to the SDRAM, the M48T58 bytes to the board
@@ -260,7 +272,7 @@ assign ioctl_wait = d_we;
 // ... and stays in reset until the DDR3 port has finished what the board started (a transaction
 // cut short there hangs the HPS port: hornet_ddr3 drain)
 reg board_reset = 1'b1;
-always @(posedge clk_sys) board_reset <= reset || rom_dl || nv_dl || !pll_locked || ldr_due || ldr_start || ldr_active
+always @(posedge clk_sys) board_reset <= reset || rom_dl || nv_dl || sys_reset || ldr_due || ldr_start || ldr_active
                                          || (board_reset && !ddr_idle);
 // the M48T58's clock takes the host's time as the board leaves reset (MAME: once, at start)
 reg board_reset_q = 1'b1;
@@ -435,7 +447,7 @@ assign s_rdata_hi = m_rdata_hi;
 ///////////////////////   MEMORY   ///////////////////////////////
 
 hornet_sdram sdram (
-	.clk(clk_sys), .clk_mem(clk_sys), .init(!pll_locked), .reset(!pll_locked), .flush(board_reset), .a_dbg(sd_dbg),
+	.clk(clk_sys), .clk_mem(clk_sys), .init(sys_reset), .reset(sys_reset), .flush(board_reset), .a_dbg(sd_dbg),
 	.SDRAM_A, .SDRAM_DQ, .SDRAM_DQML, .SDRAM_DQMH, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE,
 	.SDRAM_nRAS, .SDRAM_nCAS, .SDRAM_CLK(), .SDRAM_CKE,
 	.a_req(a_req && !board_reset), .a_we, .a_addr, .a_be, .a_wdata, .a_ack, .a_rdata,
@@ -450,14 +462,16 @@ wire [28:0] h_addr, l_addr;
 wire        h_rd, h_we, l_rd;
 wire [23:0] ddr_dbg;
 wire [77:0] ddr_cmd;
+wire [42:0] ddr_ret;
+wire        k_rst;                   // probe K's source bit 0: hornet_ddr3's reset
 hornet_ddr3 #(.N(9), .WIDE(DDR_WIDE), .PRI(5)) ddr3 (     // 5: vraster's texture fills
-	.clk(clk_sys), .reset(!pll_locked), .drain(board_reset), .idle(ddr_idle),
+	.clk(clk_sys), .reset(sys_reset || k_rst), .drain(board_reset), .idle(ddr_idle),
 	.m_read, .m_write, .m_addr, .m_burst, .m_be, .m_wdata, .m_waitn, .m_rvalid, .m_rready, .m_rdata,
 	.m_be_hi(m_be_hi), .m_wdata_hi(m_wdata_hi), .m_rdata_hi(m_rdata_hi),
 	.DDRAM_BUSY(DDRAM_BUSY || ldr_active), .DDRAM_BURSTCNT(h_burstcnt), .DDRAM_ADDR(h_addr), .DDRAM_DOUT,
 	.DDRAM_DOUT_READY(DDRAM_DOUT_READY && !ldr_active), .DDRAM_RD(h_rd),
 	.DDRAM_DIN, .DDRAM_BE, .DDRAM_WE(h_we),
-	.dbg(ddr_dbg), .dbg_cmd(ddr_cmd)
+	.dbg(ddr_dbg), .dbg_cmd(ddr_cmd), .dbg_ret(ddr_ret)
 );
 // the loader has the port while the board is in reset and hornet_ddr3 idle (ldr_start waits for it)
 assign DDRAM_BURSTCNT = ldr_active ? l_burstcnt : h_burstcnt;
@@ -465,7 +479,7 @@ assign DDRAM_ADDR     = ldr_active ? l_addr : h_addr;
 assign DDRAM_RD       = ldr_active ? l_rd : h_rd;
 assign DDRAM_WE       = !ldr_active && h_we;
 hornet_rom_loader rom_loader (
-	.clk(clk_sys), .reset(!pll_locked), .start(ldr_start), .length(27'h1C02000), .active(ldr_active),
+	.clk(clk_sys), .reset(sys_reset), .start(ldr_start), .length(27'h1C02000), .active(ldr_active),
 	.wr(ldr_wr), .addr(ldr_addr), .dout(ldr_dout), .wait_(ioctl_wait),
 	.DDRAM_BUSY, .DDRAM_BURSTCNT(l_burstcnt), .DDRAM_ADDR(l_addr), .DDRAM_DOUT, .DDRAM_DOUT_READY,
 	.DDRAM_RD(l_rd)
@@ -509,7 +523,7 @@ assign VGA_B  = ind_on ? 8'h00 : vid_b;
 assign m_burst[7] = 11'd2;
 assign {m_be[7], m_be_hi[7]} = 8'hFF;
 hornet_sndbridge sndbridge (
-	.clk(clk_sys), .reset(!pll_locked),
+	.clk(clk_sys), .reset(sys_reset),
 	.wr(snd_wr), .wreg(snd_wreg), .wdata(snd_wdata), .reply(snd_reply), .live(snd_live),
 	.m_read(m_read[7]), .m_write(m_write[7]), .m_addr(m_addr[7]), .m_burst(),
 	.m_wdata({m_wdata_hi[7], m_wdata[7]}), .m_waitn(m_waitn[7]), .m_rvalid(m_rvalid[7]),
@@ -554,6 +568,7 @@ altsource_probe #(
 assign issp_src = 8'h0;
 `endif
 assign sd_dbg = issp_src[2:1];
+`ifndef PROBE_K                         // K takes H's room: with both, the stp fit needs 4211 of 4191 LABs
 // probe H: one frame's traffic and timing, latched at each vblank (scripts/read_issp.tcl's
 // fields_H): the K037122 line builder, ports A/B/C/S, the SHARC's Voodoo writes, DDR3 beats
 reg  [7:0]  h_fr, h_swap;
@@ -603,6 +618,7 @@ altsource_probe #(
 	        h_vwait, h_vw, h_smax, h_sbur, h_cmax, h_cbusy, h_creq, h_ovr}),
 	.source(), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`endif
 `ifdef PROBE_DV                         // probes V and D: define in the .qsf when there is room
 // probe V: the Voodoo (vraster's io_dbg) a frame at a time, latched at each vblank: triangles,
 // fills, clocks drawing / busy / FIFO full / ring in use, texture fills and the clocks they hold
@@ -644,17 +660,40 @@ altsource_probe #(
 	.source(v_ring_off), .source_clk(clk_sys), .source_ena(1'b1)
 );
 `endif
-// probe K: the DDR3 port's command, live (hornet_ddr3's dbg_cmd), and every term of board_reset
+// probe K: the DDR3 port's command and return path, live (hornet_ddr3's dbg_cmd, dbg_ret), every term
+// of board_reset; the return path's state when it first held a tag (t_on), in clocks since
+// configuration; whether a command was ever taken; pll_locked's and RESET's rising edges
 `ifdef PROBE_K
+reg  [31:0] k_clk = 0, k_ton_clk = 0;
+reg  [42:0] k_ton_ret = 0;
+reg         k_ton_seen = 0, k_ton_br = 0, k_ton_rst = 0, k_take_seen = 0;
+reg  [7:0]  k_lock_up = 0, k_reset_up = 0;
+reg  [2:0]  k_lock_s = 0, k_reset_s = 0;
+always @(posedge clk_sys) begin
+	if (k_clk != 32'hFFFF_FFFF) k_clk <= k_clk + 1'd1;
+	k_lock_s <= {k_lock_s[1:0], pll_locked};
+	k_reset_s <= {k_reset_s[1:0], RESET};
+	if (k_lock_s[1] && !k_lock_s[2] && k_lock_up != 8'hFF) k_lock_up <= k_lock_up + 1'd1;
+	if (k_reset_s[1] && !k_reset_s[2] && k_reset_up != 8'hFF) k_reset_up <= k_reset_up + 1'd1;
+	if (ddr_dbg[11]) k_take_seen <= 1'b1;
+	if (ddr_cmd[10] && !k_ton_seen) begin
+		k_ton_seen <= 1'b1; k_ton_clk <= k_clk; k_ton_ret <= ddr_ret; k_ton_br <= board_reset; k_ton_rst <= RESET;
+	end
+end
 altsource_probe #(
-	.sld_auto_instance_index("YES"), .instance_id("K"), .probe_width(134), .source_width(1),
+	.sld_auto_instance_index("YES"), .instance_id("K"), .probe_width(272), .source_width(1),
 	.source_initial_value("0"), .enable_metastability("NO"), .lpm_type("altsource_probe")
 ) u_issp_k (
-	.probe({rot_dropped, ldr_addr[26:12], ldr_active, ldr_pending, ldr_due, ldr_done, dl0_seen, dl_seen_wr,
+	// rot_dropped on top: synthesis drops its constant bits from the probe's shift register, and the
+	// read pads at the top, so a constant field below the top moves every field above it
+	.probe({rot_dropped, k_ton_clk, k_ton_ret, k_ton_br, k_ton_rst, k_ton_seen, k_take_seen, k_lock_up, k_reset_up,
+	        ddr_ret, ldr_addr[26:12], ldr_active, ldr_pending, ldr_due, ldr_done, dl0_seen, dl_seen_wr,
 	        nv_seen, ldr_wr && ioctl_wait,
 	        board_reset, pll_locked, ioctl_index[7:0], ioctl_download, nv_dl, rom_dl, buttons[1], status[0],
-	        RESET, ddr_idle, ddr_cmd}), .source(), .source_clk(clk_sys), .source_ena(1'b1)
+	        RESET, ddr_idle, ddr_cmd}), .source(k_rst), .source_clk(clk_sys), .source_ena(1'b1)
 );
+`else
+assign k_rst = 1'b0;
 `endif
 `ifdef PROBE_DV
 // probe D: the DDR3 port a frame at a time (hornet_ddr3's dbg), latched at each vblank: clocks

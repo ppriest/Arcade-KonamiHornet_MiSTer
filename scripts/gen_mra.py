@@ -13,6 +13,7 @@ differ. <mameversion> comes from MAME_EXE. A clone (SETS "parent") is its parent
 own files and names; its .mra goes to releases/_alternatives/_<game>/ and names its zip and then
 the parent's (zip="clone.zip|parent.zip"), whose merged form keeps the clone's files under "<clone>/".
 """
+import json
 import re
 import subprocess
 import sys
@@ -59,6 +60,10 @@ SETS = {
                        prg="837a01.27p", nv="m48t58y-70pc1_uaa"),
 }
 ALT_DIR = {"gradius4": "_Gradius IV"}       # a parent's clones' folder under releases/_alternatives
+DEV = {"nbapbp"}                         # sets that do not run yet: releases/_dev
+NV_AT = 0x1C00000                        # the M48T58 in the image
+# the settings each set's first boot writes over its NVRAM image (scripts/mame_nvram_setup.py)
+SETUP = json.loads((REPO / "scripts" / "m48t58_setup.json").read_text())
 
 
 CHEAT_MAX = 16                          # KonamiHornet.sv's store: 16 codes
@@ -159,6 +164,16 @@ def write(setname, s, romdir, mamever, mame_dir):
     pad = f'        <part repeat="{data_pad:#x}">00</part>\n' if data_pad else ""
     smp = "".join(f"        {part(f)}\n" for f in s["snd_smp"])
     smp_mb = sum(z.size(f) for f in s["snd_smp"]) // MB
+    nv = z.read(s["nv"])
+    setup = SETUP["sets"].get(setname)
+    patch = ""
+    if setup:
+        at, data = int(SETUP["at"], 0), bytes.fromhex(setup)
+        nv = nv[:at] + data + nv[at + len(data):]
+        rows = "".join(f"\n            {data[i:i + 16].hex(' ')}" for i in range(0, len(data), 16))
+        patch = ("        <!-- ... with the settings its first boot writes (scripts/mame_nvram_setup.py): no RTC\n"
+                 "             checksum error or clock screens. A saved .nvm replaces it -->\n"
+                 f'        <patch offset="0x{NV_AT + at:X}">{rows}\n        </patch>\n')
     text = f"""<misterromdescription>
     <name>{s['desc']}</name>
     <setname>{setname}</setname>
@@ -179,7 +194,7 @@ def write(setname, s, romdir, mamever, mame_dir):
 {pair(*s['data'])}{pad}        <!-- CG ROM: ROM_LOAD32_WORD_SWAP pairs, the second at 8 MB -->
 {''.join(pair(h, l) for h, l in s['cg'])}        <!-- M48T58: the set's NVRAM image -->
         {part(s['nv'])}
-        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+{patch}        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         {part(s['snd_prg'])}
 {smp}    </rom>
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->
@@ -197,7 +212,8 @@ def write(setname, s, romdir, mamever, mame_dir):
     <buttons names="{s['buttons']},Start,Coin,Service,Test" default="A,B,X,Start,Select,R,L"/>
 </misterromdescription>
 """
-    out = REPO / "releases" / (Path("_alternatives") / ALT_DIR[parent] if parent else Path()) / f"{s['file']}.mra"
+    sub = Path("_dev") if setname in DEV else Path("_alternatives") / ALT_DIR[parent] if parent else Path()
+    out = REPO / "releases" / sub / f"{s['file']}.mra"
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
     tmp.write_text(text)
@@ -207,7 +223,7 @@ def write(setname, s, romdir, mamever, mame_dir):
                    capture_output=True)
     rd = REPO / "debug" / f"{setname}-roms"
     ref = ((rd / "prgrom.bin").read_bytes() + (rd / "datarom.bin").read_bytes() +
-           (rd / "cgrom.bin").read_bytes() + z.read(s["nv"]) + z.read(s["snd_prg"]) +
+           (rd / "cgrom.bin").read_bytes() + nv + z.read(s["snd_prg"]) +
            b"".join(z.read(f) for f in s["snd_smp"]))
     img = mra.build_image(str(tmp), [str(p) for p in z.paths])
     if img != ref:

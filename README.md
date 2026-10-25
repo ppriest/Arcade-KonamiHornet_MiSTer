@@ -31,6 +31,15 @@ drawn, with sound from the MiSTer's ARM. Doesn't run full-speed on many levels
 
 ## History
 
+`Arcade-KonamiHornet_20261026.rbf`
+* **Alpha**.
+* Faster Voodoo: the DDR3 port issues a command in the clock it is chosen. In `sim/board_tb` the
+  lava (frame 44400, 24 kHz) takes 395k Voodoo clocks a frame, where it took 513k.
+* A startup fault fixed: the PLL's lock and the HPS reset reach the core's resets through
+  synchronisers. Without them some builds stayed in reset, black and silent.
+* The first boot without an `.nvm` goes to the game: the `.mra` sets the M48T58 up past the RTC
+  checksum error and the clock screens.
+
 `Arcade-KonamiHornet_20261025.rbf`
 * **Alpha**.
 * The 15 kHz mode works, and is the default (Monitor Type DIP): 512×192, for 15 kHz CRTs. 24 kHz
@@ -56,13 +65,13 @@ Sets with an `.mra` in `releases/` (clones in `releases/_alternatives/_Gradius I
 
 | Name | Year | Manufacturer | Controls | Notes |
 |-|-|-|-|-|
-| Gradius IV: Fukkatsu (ver JAC); clones ver AAC, UAC, AAA, UAA, JAA | 1998 | Konami | 8-way joystick, three buttons, two players | playable with sound; slows down in busy scenes; the clones not run on hardware yet |
+| Gradius IV: Fukkatsu (ver JAC); clones ver AAC, UAC, AAA, UAA, JAA | 1998 | Konami | 8-way joystick, three buttons, two players | playable with sound; slows down in busy scenes; of the clones, ver UAC run on hardware (to attract), the others not yet |
 
 ### Not yet
 
 | Name | Why |
 |-|-|
-| NBA Play By Play and its clones | needs the JVS host on the PPC's serial port |
+| NBA Play By Play and its clones | needs the JVS host on the PPC's serial port; its `.mra` is in `releases/_dev` |
 
 ### Out of scope for now
 
@@ -226,15 +235,15 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Resource usage
 
-The release revision `KonamiHornet` at `e10d368` (fitter seed 9) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.449 ns, the SHARC's clk_dsp;
-clk_sys +0.631) and missed on the HDMI scaler's (`sys/` ascal) by 0.590 ns, as on seeds 4 to 8 of
-this design. At this utilisation the fitter crashed on seed 3 of an earlier commit
-(`docs/LESSONS_LEARNED.md`).
+The release revision `KonamiHornet` at `45da077` (fitter seed 9) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.301 ns, clk_sys; the SHARC's
+clk_dsp +0.453) and missed on the HDMI scaler's (`sys/` ascal) by 0.801 ns; the 20261025 build
+missed it by 0.590 ns, and seeds 4 to 9 of that design all missed it. At this utilisation the
+fitter crashed on seed 3 of an earlier commit (`docs/LESSONS_LEARNED.md`).
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 41,646 | 41,910 |
+| Logic (ALMs) | 41,568 | 41,910 |
 | Block memory bits | 4,407,017 | 5,662,720 |
 | RAM blocks | 553 | 553 |
 | DSP blocks | 96 | 112 |

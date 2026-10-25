@@ -1151,6 +1151,12 @@ ack address that is also an input port must acknowledge on writes only.
 - **[Fuuki] When reading finds nothing, tag the data and let the hardware say where it went.** A
   one-line offset was argued over three pipeline stages; tagging each line buffer with the row its
   engine set out to render and subtracting the display line answered it in one read.
+- **[KonamiHornet] Put a field that may be constant on top of a wide ISSP probe.** Synthesis
+  dropped 15 constant bits of `rot_dropped` from the middle of a 272-bit probe's shift register (257
+  stages); `read_probe_data` still returned 272 bits, padded at the top, so every field above the
+  gap read 15 bits high. The fields were self-contradictory (`take_seen` 0 with commands visibly
+  taken), which is what gave it away; the gate-level netlist (`quartus_eda`) names the
+  `shift_reg[n]` each signal feeds.
 - **VGA-colour-override builds answer yes/no hardware questions without a logic analyzer.** Override
   `VGA_R/G/B` with a solid colour gated by an internal signal; extend to 3- or 4-colour readouts via
   sticky latches. Remove all `dbg_*` wiring once fixed.

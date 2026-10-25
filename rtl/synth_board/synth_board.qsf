@@ -20,6 +20,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../cpu/ppc403/ppc403_core.sv
 set_global_assignment -name SEARCH_PATH ../raster
 set_global_assignment -name SYSTEMVERILOG_FILE ../raster/vraster.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_dpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_sdpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_rtc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_dpram2.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_cdc.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../board/hornet_icache.sv

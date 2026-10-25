@@ -115,11 +115,27 @@ set fields_K {
     {ldr_pending    101 101 bit}
     {ldr_active     102 102 bit}
     {ldr_addr_4k    103 117 hex}
-    {rot_dropped    118 133 dec}
+    {rf_rp          118 126 dec}
+    {rf_wp          127 135 dec}
+    {tq_rp          136 140 dec}
+    {tq_wp          141 145 dec}
+    {t_left         146 156 dec}
+    {t_master       157 160 dec}
+    {reset_rises    161 168 dec}
+    {lock_rises     169 176 dec}
+    {take_seen      177 177 bit}
+    {ton_seen       178 178 bit}
+    {ton_RESET      179 179 bit}
+    {ton_brd_reset  180 180 bit}
+    {ton_rf_rp      181 189 dec}
+    {ton_rf_wp      190 198 dec}
+    {ton_tq_rp      199 203 dec}
+    {ton_tq_wp      204 208 dec}
+    {ton_t_left     209 219 dec}
+    {ton_t_master   220 223 dec}
+    {ton_clk        224 255 dec}
+    {rot_dropped    256 271 dec}
 }
-# probe D: the DDR3 port, the last whole frame (clk_sys clocks)
-set fields_D {
-    {busy_clk         0  23 dec}
     {idle_clk        24  47 dec}
     {room_wait_clk   48  71 dec}
     {rd_busy_clk     72  95 dec}

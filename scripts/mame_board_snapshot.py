@@ -6,7 +6,7 @@ sim/board_tb.
     python scripts/mame_board_snapshot.py gradius4 --frame 7500 [--frames 4] [--nvram debug/nvram]
         [--events 4400:IN2:80:5,4430:IN0:80:5] [--pokes 700:8021708B:18,4431:4930:9]
         [--dip "Monitor Type=15KHz" --tag 15k]
-    -> debug/<set>-board<frame>[-<tag>]/{start/, f1/ .. f<frames>/}
+    -> debug/<set>-board<frame>[-<tag>]/{start/, f1/ .. f<frames>/}, for each of --frame's frames
 
 The layout of start/ and f<n>/ is in scripts/mame/boardsnap.lua.
 """
@@ -25,7 +25,7 @@ from mame_capture import NO_WINDOW, mame_cmd, mame_paths  # noqa: E402
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game")
-    ap.add_argument("--frame", type=int, required=True)
+    ap.add_argument("--frame", required=True, help="a frame, or several: 8000,12000,... (one MAME run)")
     ap.add_argument("--frames", type=int, default=4)
     ap.add_argument("--nvram", default=str(REPO / "debug" / "nvram"))
     ap.add_argument("--events", default="")
@@ -35,25 +35,31 @@ def main():
     a = ap.parse_args()
 
     mame_dir, exe = mame_paths()
-    out = REPO / "debug" / (f"{a.game}-board{a.frame}" + (f"-{a.tag}" if a.tag else ""))
-    out.mkdir(parents=True, exist_ok=True)
-    for c in out.iterdir():               # clear, not remove: the folder may be a cwd
-        shutil.rmtree(c) if c.is_dir() else c.unlink()
+    frames = sorted(int(f) for f in a.frame.split(","))
+    pattern = REPO / "debug" / (f"{a.game}-board%d" + (f"-{a.tag}" if a.tag else ""))
+    for f in frames:
+        d = Path(str(pattern) % f)
+        d.mkdir(parents=True, exist_ok=True)
+        for c in d.iterdir():             # clear, not remove: the folder may be a cwd
+            shutil.rmtree(c) if c.is_dir() else c.unlink()
+    out = Path(str(pattern) % frames[0])  # the run's own files (nvram, cfg, log) in the first
     (out / "cfg").mkdir()
     if Path(a.nvram).exists():
         shutil.copytree(Path(a.nvram), out / "nvram")
-    env = dict(os.environ, CORE_OUT=out.as_posix(), CORE_FRAME=str(a.frame), CORE_FRAMES=str(a.frames),
+    env = dict(os.environ, CORE_OUT=(pattern.as_posix() if len(frames) > 1 else out.as_posix()),
+               CORE_FRAME=",".join(map(str, frames)), CORE_FRAMES=str(a.frames),
                CORE_EVENTS=a.events, CORE_POKES=a.pokes, CORE_DIPS=a.dip, CORE_SCRIPT=str(REPO / "scripts" / "mame" / "boardsnap.lua"))
     cmd = mame_cmd(exe, a.game, None, mame_dir,
                    ["-nodrc", "-nvram_directory", str(out / "nvram"), "-cfg_directory", str(out / "cfg"),
-                    "-seconds_to_run", str(a.frame // 50 + a.frames + 60)])
+                    "-seconds_to_run", str(frames[-1] // 50 + (a.frames + 4) * len(frames) + 60)])
     p = subprocess.run(cmd, cwd=mame_dir, env=env, capture_output=True, text=True, **NO_WINDOW)
     (out / "mame_log.txt").write_text(p.stdout + p.stderr)
     if (out / "lua_error.txt").exists():
         sys.exit("Lua failed: " + (out / "lua_error.txt").read_text())
     if "BOARDSNAP_DONE" not in p.stdout:
         sys.exit("capture did not finish:\n" + (p.stdout + p.stderr)[-2000:])
-    print(f"board at frame {a.frame} and {a.frames} frame(s) after -> {out}")
+    for f in frames:
+        print(f"board at frame {f} and {a.frames} frame(s) after -> {str(pattern) % f}")
 
 
 if __name__ == "__main__":

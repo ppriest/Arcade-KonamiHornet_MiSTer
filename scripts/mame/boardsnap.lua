@@ -19,8 +19,14 @@
 --   CORE_POKES ("from:addr:value,...": a byte written to the main CPU's space every frame from
 --   frame <from> until the dump, as a MAME cheat's run script; hex address and value)
 
-local out    = os.getenv("CORE_OUT")
-local frame  = tonumber(os.getenv("CORE_FRAME") or "7500")
+-- CORE_FRAME may list several frames ("8000,12000"): one run, a snapshot at each, each in
+-- CORE_OUT with "%d" replaced by its frame (CORE_OUT alone for a single frame)
+local outp   = os.getenv("CORE_OUT")
+local targets = {}
+for f in (os.getenv("CORE_FRAME") or "7500"):gmatch("%d+") do targets[#targets + 1] = tonumber(f) end
+local ti     = 1
+local frame  = targets[1]
+local out    = outp:find("%%d") and outp:format(frame) or outp
 local frames = tonumber(os.getenv("CORE_FRAMES") or "4")
 local events = os.getenv("CORE_EVENTS") or ""
 local pokes  = os.getenv("CORE_POKES") or ""
@@ -178,8 +184,15 @@ boardsnap_subs[#boardsnap_subs + 1] = emu.add_machine_frame_notifier(function()
     elseif state == 1 then
         dump_frame(f - first)
         if f - first >= frames then
-            print("BOARDSNAP_DONE")
-            m:exit()
+            ti = ti + 1
+            if ti > #targets then
+                print("BOARDSNAP_DONE")
+                m:exit()
+            else
+                frame = targets[ti]
+                out = outp:format(frame)
+                state = 0
+            end
         end
     end
 end)

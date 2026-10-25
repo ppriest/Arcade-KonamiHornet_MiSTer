@@ -36,6 +36,7 @@ logic [63:0] DDRAM_DOUT = 0, DDRAM_DIN;
 logic [23:0] dbg;
 logic        drain = 0, idle;
 logic [77:0] dbg_cmd;
+logic [42:0] dbg_ret;
 
 // +rdy=P: each master ready for its read data P percent of the clocks (m_rready)
 logic [N-1:0]       m_rready = '1;
