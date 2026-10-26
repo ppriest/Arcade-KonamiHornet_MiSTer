@@ -31,6 +31,19 @@ drawn, with sound from the MiSTer's ARM. Doesn't run full-speed on many levels
 
 ## History
 
+`Arcade-KonamiHornet_20261027.rbf`
+* **Beta**.
+* Faster Voodoo. In `sim/board_tb` at the board's DDR3 latency, the 24 kHz lava (frame 44400) now
+  draws within its frame, where it overran by a third of one; at 15 kHz it takes 655k Voodoo
+  clocks a frame, where it took 832k. Over 58 in-game snapshots (both modes) the Voodoo's time is
+  9% lower, and 19-21% lower in the busiest 15 kHz scenes. Texture fills overlap and run further
+  ahead, the line buffer takes four pixels at a time, triangle setup divides in half the clocks, and
+  the SHARC reads the Voodoo's status without a round trip.
+* Smaller: the SHARC keeps only the instructions the game's programs use (`docs/HACKS.md`); the
+  core takes 39,705 ALMs, where it took 41,568.
+* Timing is met on every clock, the HDMI scaler's included.
+* There's some issue with walking robots on a couple of the stages, not falling to, and tracking the ground. This may be protection (as very similar issue in Salamander 2), or just an emulation bug...
+
 `Arcade-KonamiHornet_20261026.rbf`
 * **Alpha**.
 * Faster Voodoo: the DDR3 port issues a command in the clock it is chosen. In `sim/board_tb` the
@@ -119,7 +132,7 @@ One cell per LAB, M10K or DSP site, coloured by the block owning most of it, bri
 The thin columns are M10K and DSP; the empty area at the top right is the HPS; grey is the MiSTer
 framework. LUT counts are combinational cells, two per ALM.
 
-Revision `KonamiHornet` at `bde515a` (the 20261024 alpha), fitted 24 Oct 2026:
+Revision `KonamiHornet` at `3f4c78e` (the 20261027 beta), fitter seed 9:
 
 ![Floorplan of KonamiHornet](docs/floorplan/KonamiHornet.png)
 
@@ -235,21 +248,21 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Resource usage
 
-The release revision `KonamiHornet` at `45da077` (fitter seed 9) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7. Setup is met on the core's clocks (worst +0.301 ns, clk_sys; the SHARC's
-clk_dsp +0.453) and missed on the HDMI scaler's (`sys/` ascal) by 0.801 ns; the 20261025 build
-missed it by 0.590 ns, and seeds 4 to 9 of that design all missed it. At this utilisation the
-fitter crashed on seed 3 of an earlier commit (`docs/LESSONS_LEARNED.md`).
+The release revision `KonamiHornet` at `3f4c78e` (fitter seed 9) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7. Setup is met on every clock: worst +0.679 ns on clk_sys, +1.073 ns on the
+SHARC's clk_dsp, +0.111 ns on the HDMI scaler's (`sys/` ascal), which the 20261025 and 20261026 builds
+missed by 0.590 and 0.801 ns. At high utilisation the fitter crashed on seed 3 of an earlier commit
+(`docs/LESSONS_LEARNED.md`).
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 41,568 | 41,910 |
-| Block memory bits | 4,407,017 | 5,662,720 |
+| Logic (ALMs) | 39,705 | 41,910 |
+| Block memory bits | 4,409,070 | 5,662,720 |
 | RAM blocks | 553 | 553 |
-| DSP blocks | 96 | 112 |
+| DSP blocks | 103 | 112 |
 | PLLs | 3 | 6 |
 
-Logic and RAM blocks are both nearly full; the SHARC is the largest block.
+RAM blocks are full and logic nearly so; the SHARC is the largest block.
 
 ## AI Attestation
 

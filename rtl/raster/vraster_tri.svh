@@ -219,7 +219,7 @@ logic signed [11:0] cx0, cx1;                          // the clipped ends befor
 logic        row_skip;
 
 // parameters at x = vertex A's integer x on the current row (MAME: start + dy * dpdy), and the
-// multiply that takes them to a span's start: one parameter a clock (A, W, S, T)
+// multiplies that take them to a span's start (A, W, S, T at once)
 logic signed [31:0] r_a;
 logic signed [63:0] r_w, r_s, r_t;
 logic [1:0]  pk;
@@ -243,28 +243,27 @@ logic signed [43:0] x13, x12, x23;                    // 12.20 with 12 bits to s
 logic signed [11:0] ea, eb;                            // this row's ends, rounded
 logic [9:0]  sy_l;
 
-// the one multiplier of the row and span starts: (y - ay) or (x0 - ax) by the parameter pk's slope,
-// its operands registered (m1), the product the clock after (mprod_q), added the clock after that
+// the four multipliers of the row and span starts: (y - ay) or (x0 - ax) by each parameter's
+// slope, the operands registered (m1), the products the clock after (mprod_q), added the clock
+// after that: a span's start three clocks after T_SPAN, a row in three clocks
 logic signed [11:0] mop_a, ma_q;
-logic signed [63:0] mop_b, mb_q;
-logic signed [63:0] mprod_q;
-logic [2:0]  mk1, mk_q;                                // its {row, parameter}
-logic        mv1, mv_q;
+logic signed [63:0] mb_q [4];
+logic signed [63:0] mprod_q [4];
+logic        mr1, mr_q;                                // the row's products (T_ROW0), not a span's
+logic        mv1, mv_q, span_go;
 always_ff @(posedge clk) begin
-    ma_q <= mop_a; mb_q <= mop_b;
-    mk1 <= {ts == T_ROW0, pk};
-    mv1 <= ts == T_ROW0 || (ts == T_SPAN && !span_hold);
-    mprod_q <= 64'(ma_q * mb_q);
-    mk_q <= mk1;
+    ma_q <= mop_a;
+    mb_q[0] <= (ts == T_ROW0) ? 64'(dAdY) : 64'(dAdX);
+    mb_q[1] <= (ts == T_ROW0) ? dWdY : dWdX;
+    mb_q[2] <= (ts == T_ROW0) ? dSdY : dSdX;
+    mb_q[3] <= (ts == T_ROW0) ? dTdY : dTdX;
+    mr1 <= ts == T_ROW0;
+    mv1 <= (ts == T_ROW0 && pk == 2'd0) || span_go;
+    for (int k = 0; k < 4; k++) mprod_q[k] <= 64'(ma_q * mb_q[k]);
+    mr_q <= mr1;
     mv_q <= mv1;
 end
-always_comb begin
-    mop_a = (ts == T_ROW0) ? y_cur - ayi : $signed({2'b0, sx0}) - axi;
-    case ({ts == T_ROW0, pk})
-    3'b100: mop_b = 64'(dAdY);  3'b101: mop_b = dWdY;  3'b110: mop_b = dSdY;  3'b111: mop_b = dTdY;
-    3'b000: mop_b = 64'(dAdX);  3'b001: mop_b = dWdX;  3'b010: mop_b = dSdX;  default: mop_b = dTdX;
-    endcase
-end
+assign mop_a = (ts == T_ROW0) ? y_cur - ayi : $signed({2'b0, sx0}) - axi;
 
 // span descriptor handed to the reader
 logic        sd_v;
@@ -275,12 +274,14 @@ logic signed [31:0] sd_a;
 logic signed [63:0] sd_w, sd_s, sd_t;
 logic        sd_take;                                  // the reader takes it this clock
 
-// the span whose start parameters are being computed, emitted when its last product has landed
-// while the row loop goes on to the next row (whose products wait for the emit: span_hold)
+// the span whose start parameters are being computed, emitted when its products have landed
+// while the row loop goes on to the next row (whose products wait for the emit: span_hold, off in
+// the emit's clock, when the row's parameters step as well)
 logic        e_v, e_last;                              // pending; the row's last part
 logic [9:0]  e_x0, e_x1, e_sy;
-wire         span_hold = ts == T_SPAN && pk == 2'd0 && e_v;
 wire         emit_now = e_v && !mv1 && !mv_q && (!sd_v || sd_take) && !drain_pend;
+wire         span_hold = ts == T_SPAN && e_v && !emit_now;
+assign       span_go = ts == T_SPAN && !span_hold && !(cx0 >= cx1 || row_skip);
 // the pipeline's x-gradients, taken at each emit (the registers may hold the next triangle's)
 logic signed [31:0] px_dadx;
 logic signed [63:0] px_dwdx, px_dsdx, px_dtdx;
@@ -291,17 +292,14 @@ logic        fill_idle;                                // the texture fill engin
 always_ff @(posedge clk) begin
     tri_done <= 1'b0;
     if (sd_take) sd_v <= 1'b0;
-    if (mv_q)
-        case (mk_q)
-        3'b100: r_a <= startA + 32'(mprod_q);
-        3'b101: r_w <= startW + mprod_q;
-        3'b110: r_s <= startS + mprod_q;
-        3'b111: r_t <= startT + mprod_q;
-        3'b000: sp_a <= r_a + 32'(mprod_q);
-        3'b001: sp_w <= r_w + mprod_q;
-        3'b010: sp_s <= r_s + mprod_q;
-        default: sp_t <= r_t + mprod_q;
-        endcase
+    if (mv_q && mr_q) begin
+        r_a <= startA + 32'(mprod_q[0]); r_w <= startW + mprod_q[1];
+        r_s <= startS + mprod_q[2]; r_t <= startT + mprod_q[3];
+    end
+    if (mv_q && !mr_q) begin
+        sp_a <= r_a + 32'(mprod_q[0]); sp_w <= r_w + mprod_q[1];
+        sp_s <= r_s + mprod_q[2]; sp_t <= r_t + mprod_q[3];
+    end
     if (drain_pend && spans_idle && fill_idle && !sd_v) drain_pend <= 1'b0;
     if (emit_now) begin
         logic [20:0] rb;
@@ -344,17 +342,23 @@ always_ff @(posedge clk) begin
             div_d[k] <= 40'(dy[k]);
             div_rem[k] <= 40'h0;
         end
-        div_n <= 6'd40;
+        div_n <= 6'd20;
         ts <= T_DIV;
     end
     T_DIV: begin
+        // restoring division, two quotient bits a clock
         logic [40:0] r;
+        logic [39:0] qq, rm;
         logic signed [39:0] q [3];
         for (int k = 0; k < 3; k++) begin
-            r = {div_rem[k][39:0], div_q[k][39]};
-            div_q[k] <= {div_q[k][38:0], r >= {1'b0, div_d[k]}};
-            div_rem[k] <= (r >= {1'b0, div_d[k]}) ? 40'(r - {1'b0, div_d[k]}) : r[39:0];
-            q[k] = $signed({div_q[k][38:0], r >= {1'b0, div_d[k]}});
+            qq = div_q[k]; rm = div_rem[k];
+            for (int i = 0; i < 2; i++) begin
+                r = {rm, qq[39]};
+                qq = {qq[38:0], r >= {1'b0, div_d[k]}};
+                rm = (r >= {1'b0, div_d[k]}) ? 40'(r - {1'b0, div_d[k]}) : r[39:0];
+            end
+            div_q[k] <= qq; div_rem[k] <= rm;
+            q[k] = $signed(qq);
             q[k] = div_z[k] ? 40'sd0 : div_neg[k] ? -q[k] : q[k];
         end
         div_n <= div_n - 6'd1;
@@ -364,8 +368,8 @@ always_ff @(posedge clk) begin
         end
     end
     T_ROW0: begin
-        // the first row's parameters: start + (y - ay) * dpdy (the shared multiplier, added above);
-        // the edges' first x
+        // the first row's parameters: start + (y - ay) * dpdy (the multipliers, added above); the
+        // edges' first x
         if (pk == 2'd0) begin
             // y - vertex y, both signed (a first row at 0 under a vertex just above the top)
             ep[0] <= (17'($signed({y_cur, 4'h8})) - 17'(t1y)) * slope13;
@@ -416,12 +420,11 @@ always_ff @(posedge clk) begin
         ts <= T_SPAN;
     end
     T_SPAN: if (!span_hold) begin
-        // the span start's parameters: the row's + (x0 - ax) * dpdx; an empty row leaves its
-        // first product unused. After the fourth the span is pending (e_*) and the loop goes on;
-        // a set holds SBEATS beats, so a longer span goes as its first SBEATS and the rest from T_SPAN again
-        pk <= pk + 2'd1;
-        if (pk == 2'd0 && (cx0 >= cx1 || row_skip)) ts <= T_NEXT;
-        else if (pk == 2'd3) begin
+        // the span start's parameters: the row's + (x0 - ax) * dpdx (the multipliers, span_go).
+        // The span is pending (e_*) and the loop goes on; a set holds SBEATS beats, so a longer
+        // span goes as its first SBEATS and the rest from T_SPAN again
+        if (cx0 >= cx1 || row_skip) ts <= T_NEXT;
+        else begin
             logic [9:0] xb;
             xb = {sx0[9:2] + 8'(SBEATS), 2'b00};
             e_v <= 1'b1; e_x0 <= sx0; e_sy <= s_scry;
@@ -455,9 +458,9 @@ end
 // ports, a clock at a time: on port A q18's pixel goes first and the reader's beat for that RAM
 // waits in hornet_ddr3 (readReady); on port B q16's read goes first and the writer reads again.
 typedef enum logic [2:0] { S_FREE, S_READ, S_READY, S_PROC, S_DONE, S_WRITE } sstate_t;
-// set index bits: 4 (16 sets) took the lava's (44400) second frame from 513k to 439k busy clocks in
-// board_tb, for about 395 ALMs more (rtl/synth_board estimate), which the device does not have
-localparam int SB = 3;
+// set index bits: 4 (16 sets) takes the lava's (44400) second frame from 563k to 448k Voodoo busy
+// clocks in board_tb +ddr3 (2150: 1% fewer), for about 395 ALMs more than 3 (rtl/synth_board estimate)
+localparam int SB = 4;
 localparam int NSET = 1 << SB;
 localparam int EB = 9 - SB;                            // a set's entry bits
 localparam int SBEATS = 1 << EB;
@@ -828,12 +831,17 @@ end
 // F2_WAIT lets the last tag reach the tag read.
 // Only a missing tile stalls the pipeline: pixels that hit go on while a fill runs. So that none
 // reads a slot being rewritten, a fill first clears the tags of its run, a tile a clock, and takes
-// no data (readReady) until it has. After a fill for a miss, while the triangle has spans to come,
-// the same run one tile row on (dTdY's sign) is fetched ahead: spans walk t a row at a time.
+// no data (readReady) until it has. While a run's data comes, the next run's rows are requested (n_*):
+// a miss outside the run, or, while the triangle has spans to come, the same run one tile row on
+// (dTdY's sign) while that row is within two tile rows of the one the pipeline is at (t_px), the
+// chain going on from each run; so a run's latency passes under the one before. The next run is
+// the current one when that one's last word is in; its tags are cleared while the current's data
+// comes, where the two runs share no slot and the tag port is free, else then (its data waits:
+// readReady is low from the current run's last word, and the memory's return path behind it).
 localparam int TRUN = 8;
 typedef enum logic [2:0] { F2_IDLE, F2_REQ, F2_DATA, F2_WAIT } fillst_t;
 fillst_t     fls;
-assign       fill_idle = fls == F2_IDLE;
+assign       fill_idle = fls == F2_IDLE && !n_v;
 logic [7:0]  cf_s, cf_t;                               // the run's first texel
 logic [3:0]  cf_kn;                                    // tiles in the run
 logic [1:0]  cf_rq;                                    // the next row to request
@@ -842,9 +850,22 @@ logic [2:0]  cf_k;                                     // ... its tile in the ru
 logic [3:0]  cf_wi;                                    // ... its word in the row's burst (8-bit)
 logic [3:0]  cf_pad;                                   // an 8-bit row's burst starts a word early
 logic [3:0]  cf_iv;                                    // the run's tags cleared so far
-logic        cf_pf;                                    // the fill is a prefetch
-logic        pf_v;                                     // a prefetch waits: the run (cf_s, cf_kn) at row pf_t
-logic [7:0]  pf_t;
+logic        cf_pf /*verilator public_flat_rd*/;      // the fill is a prefetch
+logic        n_v;                                      // the next run: its rows requested while the current's data comes
+logic [7:0]  n_s, n_t;
+logic [3:0]  n_kn;
+logic        n_pf;
+logic [2:0]  n_rq;                                     // ... its rows requested
+logic [3:0]  n_pad;
+logic [3:0]  n_iv;                                     // ... its tags cleared so far
+logic        n_conf;                                   // ... it shares a slot with the current run
+logic        rq_n;                                     // the port requests the next run's rows
+logic [7:0]  rq_s, rq_t;
+logic [1:0]  rq_r;
+logic [3:0]  rq_kn;
+logic [7:0]  t_px;                                     // the tile row the pipeline is at (q11's t0)
+wire  [7:0]  pf_next = dTdY[63] ? cf_t - 8'd4 : cf_t + 8'd4;
+wire  [7:0]  pf_ahead = dTdY[63] ? t_px - pf_next : pf_next - t_px;   // texel rows ahead of the pipeline
 logic        fb_on;                                    // a tile-row is written to the banks this clock
 logic [2:0]  fb_k;                                     // ... its tile in the run
 logic        h_v;                                      // an 8-bit beat's high word, written now
@@ -858,13 +879,52 @@ wire         w_last = cf_wi + 4'd2 == w_end;
 wire         fill_last = t16 ? fill_dv && cf_r == 2'd3 && k_last : h_v && cf_r == 2'd3 && w_last;
 wire         iv_done = cf_iv == cf_kn;
 wire         iv_we = (fls == F2_REQ || fls == F2_DATA) && !iv_done && !tag_clr;
-assign io_memTex_readReady = iv_done && !(fill_dv && !t16);
+// the next run's tags, while the current's data comes: not over the current's clears or tile tags
+wire         n_iv_we = fls == F2_DATA && n_v && !n_conf && n_iv != n_kn && !tag_clr && !iv_we && !(fb_on && cf_r == 2'd3);
+assign io_memTex_readReady = (fls == F2_REQ || fls == F2_DATA) && iv_done && !(fill_dv && !t16) && !fill_last;
+// the port's read: the current run's rows (F2_REQ), else the next run's
+assign       rq_n = fls == F2_DATA && n_v && !n_rq[2];
+assign       rq_s = rq_n ? n_s : cf_s;
+assign       rq_t = rq_n ? n_t : cf_t;
+assign       rq_r = rq_n ? n_rq[1:0] : cf_rq;
+assign       rq_kn = rq_n ? n_kn : cf_kn;
 // tile k of the run's first texel
 function automatic logic [7:0] run_s(input logic [7:0] s, input logic [2:0] k);
     return s + {3'b0, k, 2'b00};
 endfunction
 
 assign stall = miss != 4'h0;
+// the first missing tap's texel; the run for it: a texture row of TRUN tiles or fewer whole (its
+// width 1 << t_twb texels); otherwise TRUN tiles from the missing one, or to the row's end, or where
+// s falls (s_falls), TRUN tiles ending at it, or from the row's start
+logic [7:0]  ms_s, ms_t, m_rs;
+logic [3:0]  m_kn;
+logic        m_in;                                     // ... the current run holds the missing tile
+always_comb begin
+    logic [8:0] left;
+    logic [5:0] dk;
+    ms_s = miss[0] ? tap_s(tc11, 0) : miss[1] ? tap_s(tc11, 1) : miss[2] ? tap_s(tc11, 2) : tap_s(tc11, 3);
+    ms_t = miss[0] ? tap_t(tc11, 0) : miss[1] ? tap_t(tc11, 1) : miss[2] ? tap_t(tc11, 2) : tap_t(tc11, 3);
+    left = (9'd1 << t_twb) - {1'b0, ms_s[7:2], 2'b00};
+    if (t_twb <= 4'($clog2(TRUN) + 2)) begin
+        m_rs = 8'h00;
+        m_kn = (t_twb < 4'd2) ? 4'd1 : 4'((9'd1 << t_twb) >> 2);
+    end else if (s_falls) begin
+        m_rs = (ms_s[7:2] >= 6'(TRUN - 1)) ? {ms_s[7:2] - 6'(TRUN - 1), 2'b00} : 8'h00;
+        m_kn = 4'(TRUN);
+    end else begin
+        m_rs = {ms_s[7:2], 2'b00};
+        m_kn = (left[8:2] >= 7'(TRUN)) ? 4'(TRUN) : left[5:2];
+    end
+    dk = ms_s[7:2] - cf_s[7:2];
+    m_in = ms_t[7:2] == cf_t[7:2] && {2'b00, dk} < {2'b00, cf_kn};
+end
+// two runs share a slot: the same tile row's slots (t[6:2]) with their columns (s[6:2], mod 32) overlapping
+always_comb begin
+    logic [4:0] d;
+    d = n_s[TCB+1:2] - cf_s[TCB+1:2];
+    n_conf = n_t[TCB+1:2] == cf_t[TCB+1:2] && ({1'b0, d} < {2'b00, cf_kn} || {1'b0, 5'(-d)} < {2'b00, n_kn});
+end
 // s along the pipeline at the miss: the next pixel's (q10) against the missing one's
 wire [7:0]   s_step = tap_s(tc10, 0) - tap_s(tc11, 0);
 wire         s_falls = (m10.v && s_step != 8'h00) ? s_step[7] : px_dsdx[63];
@@ -878,7 +938,8 @@ always_ff @(posedge clk) begin
     h_v <= fill_dv && !t16;
     if (fill_dv) h_d <= io_memTex_readDataHi;
     if (iv_we) cf_iv <= cf_iv + 4'd1;
-    if (drain_pend || ts == T_DRAIN || ts == T_IDLE) pf_v <= 1'b0;
+    if (n_iv_we) n_iv <= n_iv + 4'd1;
+    if (m11.v && !stall) t_px <= tc11.t0;
     if (fill_dv && t16) begin
         if (k_last) begin cf_k <= 3'd0; cf_r <= cf_r + 2'd1; end
         else cf_k <= cf_k + 3'd1;
@@ -887,39 +948,12 @@ always_ff @(posedge clk) begin
         if (w_last) begin cf_wi <= 4'd0; cf_r <= cf_r + 2'd1; end
         else cf_wi <= cf_wi + 4'd2;
     end
-    if (reset) fls <= F2_IDLE;
+    if (reset) begin fls <= F2_IDLE; n_v <= 1'b0; end
     else case (fls)
     F2_IDLE: if (miss != 4'h0) begin
-        int k;
-        logic [7:0] ms, mt;
-        k = miss[0] ? 0 : miss[1] ? 1 : miss[2] ? 2 : 3;
-        ms = tap_s(tc11, k); mt = tap_t(tc11, k);
-        cf_t <= {mt[7:2], 2'b00};
-        // the run: a texture row of TRUN tiles or fewer whole (its width 1 << t_twb texels);
-        // otherwise TRUN tiles from the missing one, or to the row's end, or where s falls (the next
-        // pixel's s below the missing one's, or with no next pixel or the same s, dSdX < 0), TRUN
-        // tiles ending at it, or from the row's start
-        begin
-            logic [8:0] left;
-            left = (9'd1 << t_twb) - {1'b0, ms[7:2], 2'b00};
-            if (t_twb <= 4'($clog2(TRUN) + 2)) begin
-                cf_s <= 8'h00;
-                cf_kn <= (t_twb < 4'd2) ? 4'd1 : 4'((9'd1 << t_twb) >> 2);
-            end else if (s_falls) begin
-                cf_s <= (ms[7:2] >= 6'(TRUN - 1)) ? {ms[7:2] - 6'(TRUN - 1), 2'b00} : 8'h00;
-                cf_kn <= 4'(TRUN);
-            end else begin
-                cf_s <= {ms[7:2], 2'b00};
-                cf_kn <= (left[8:2] >= 7'(TRUN)) ? 4'(TRUN) : left[5:2];
-            end
-        end
+        cf_t <= {ms_t[7:2], 2'b00}; cf_s <= m_rs; cf_kn <= m_kn;
         cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0; cf_iv <= 4'd0;
-        cf_pf <= 1'b0; pf_v <= 1'b0;
-        fls <= F2_REQ;
-    end else if (pf_v && !drain_pend && ts != T_DRAIN && ts != T_IDLE) begin
-        cf_t <= pf_t;
-        cf_rq <= 2'd0; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0; cf_iv <= 4'd0;
-        cf_pf <= 1'b1; pf_v <= 1'b0;
+        cf_pf <= 1'b0;
         fls <= F2_REQ;
     end
     F2_REQ: if (io_memTex_waitRequestn) begin
@@ -927,14 +961,28 @@ always_ff @(posedge clk) begin
         cf_rq <= cf_rq + 2'd1;
         if (cf_rq == 2'd3) fls <= F2_DATA;
     end
-    F2_DATA: if (fill_last) begin
-        fls <= F2_WAIT;
-        if (!cf_pf && !drain_pend && ts != T_DRAIN && ts != T_IDLE) begin
-            pf_v <= 1'b1;
-            pf_t <= dTdY[63] ? cf_t - 8'd4 : cf_t + 8'd4;
+    F2_DATA: begin
+        if (rq_n && io_memTex_waitRequestn) begin
+            n_pad[n_rq[1:0]] <= !t16 && tf_a[2];
+            n_rq <= n_rq + 3'd1;
         end
+        // the next run: a miss outside this run, else the chain's next row
+        if (!n_v && !fill_last) begin
+            if (miss != 4'h0 && !m_in) begin
+                n_v <= 1'b1; n_t <= {ms_t[7:2], 2'b00}; n_s <= m_rs; n_kn <= m_kn; n_pf <= 1'b0; n_rq <= 3'd0; n_iv <= 4'd0;
+            end else if ((miss == 4'h0 || m_in) && (!cf_pf || pf_ahead < 8'd12) && !drain_pend && ts != T_DRAIN && ts != T_IDLE) begin
+                n_v <= 1'b1; n_t <= pf_next; n_s <= cf_s; n_kn <= cf_kn; n_pf <= 1'b1; n_rq <= 3'd0; n_iv <= 4'd0;
+            end
+        end
+        if (fill_last) fls <= F2_WAIT;
     end
-    F2_WAIT: fls <= F2_IDLE;
+    // the next run is current: its rows requested so far, its tags to clear
+    F2_WAIT: if (n_v) begin
+        cf_s <= n_s; cf_t <= n_t; cf_kn <= n_kn; cf_pf <= n_pf; cf_pad <= n_pad;
+        cf_rq <= n_rq[1:0]; cf_r <= 2'd0; cf_k <= 3'd0; cf_wi <= 4'd0; cf_iv <= n_iv;
+        n_v <= 1'b0;
+        fls <= n_rq[2] ? F2_DATA : F2_REQ;
+    end else fls <= F2_IDLE;
     default: fls <= F2_IDLE;
     endcase
 end
@@ -945,9 +993,10 @@ always_ff @(posedge clk)
 
 // the tag writes: the clear's, a fill's clearing of its run, or a tile's with its last row (row 3)
 always_comb begin
-    tg_we = tag_clr || iv_we || (fb_on && cf_r == 2'd3);
-    tg_wa = tag_clr ? clr_i : tile_slot(run_s(cf_s, iv_we ? cf_iv[2:0] : fb_k), cf_t);
-    tg_wd = (tag_clr || iv_we) ? 28'h0 : {1'b1, tile_tag(run_s(cf_s, fb_k), cf_t)};
+    tg_we = tag_clr || iv_we || n_iv_we || (fb_on && cf_r == 2'd3);
+    tg_wa = tag_clr ? clr_i : n_iv_we ? tile_slot(run_s(n_s, n_iv[2:0]), n_t)
+                                      : tile_slot(run_s(cf_s, iv_we ? cf_iv[2:0] : fb_k), cf_t);
+    tg_wd = (tag_clr || iv_we || n_iv_we) ? 28'h0 : {1'b1, tile_tag(run_s(cf_s, fb_k), cf_t)};
 end
 
 // the fill's bank writes into banks (row parity, column parity), an entry (two texels) a bank: a
@@ -1050,18 +1099,37 @@ always_ff @(posedge clk) begin
     pb18 <= pix_blend(pc17, m17.wf, dpix17, dz17);
 end
 
-// line-buffer port A: the reader's words, or q18's pixel, dithered
+// line-buffer port A: the reader's words, or q18's pixels, dithered, an entry (four pixels) at a
+// time: merged in acc_* and written with the entry's last pixel (the span's last, or the next
+// pixel's entry another or none), so that the port is the reader's the other clocks. A pixel's
+// destination read (q16) needs only its own lane, which no pixel before it in the entry writes
 logic [15:0] px_color;
 assign px_color = dither565(fbzMode, m18.sy[1:0], m18.x[1:0], pb18.r, pb18.g, pb18.b);
+logic [63:0] acc_c, acc_z, mg_c, mg_z;
+logic [7:0]  acc_be, mg_be;
+wire         px_wr = m18.v && (m18.last || !m17.v || m17.set != m18.set || m17.o != m18.o);
+wire         wr17 = m17.v && (m17.last || !m16.v || m16.set != m17.set || m16.o != m17.o);
+always_comb begin
+    mg_c = acc_c; mg_z = acc_z; mg_be = acc_be;
+    if (pb18.ok) begin
+        mg_c[{m18.x[1:0], 4'h0} +: 16] = px_color;
+        mg_z[{m18.x[1:0], 4'h0} +: 16] = pb18.depth;
+        mg_be = mg_be | (8'b11 << {m18.x[1:0], 1'b0});
+    end
+end
+always_ff @(posedge clk)
+    if (m18.v) begin
+        acc_c <= mg_c; acc_z <= mg_z;
+        acc_be <= px_wr ? 8'h00 : mg_be;
+    end else if (reset) acc_be <= 8'h00;
 always_comb
     for (int k = 0; k < 4; k++) begin
         lac_addr[k] = 7'h0; laz_addr[k] = 7'h0;
         lca_be[k] = 8'h0; lza_be[k] = 8'h0; lca_d[k] = 64'h0; lza_d[k] = 64'h0;
-        if (m18.v && lb_ram(m18.set) == 2'(k) && pb18.ok) begin
+        if (px_wr && lb_ram(m18.set) == 2'(k)) begin
             lac_addr[k] = {lb_part(m18.set), m18.o}; laz_addr[k] = {lb_part(m18.set), m18.o};
-            lca_d[k] = {4{px_color}}; lza_d[k] = {4{pb18.depth}};
-            lca_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
-            lza_be[k] = 8'b11 << {m18.x[1:0], 1'b0};
+            lca_d[k] = mg_c; lza_d[k] = mg_z;
+            lca_be[k] = mg_be; lza_be[k] = mg_be;
         end
         if (zd_v && lb_ram(zd_set) == 2'(k)) begin
             laz_addr[k] = {lb_part(zd_set), EB'(zd_n >> 1)};
@@ -1073,9 +1141,12 @@ always_comb
         end
     end
 
-// a beat may come next clock unless q17's pixel will be written (q18) to the RAM it may be for
-assign io_memFbColorRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(cd_set) || lb_ram(m17.set) == lb_ram(cd_set + 1'd1)));
-assign io_memFbAuxRead_readReady = !(m17.v && (lb_ram(m17.set) == lb_ram(zd_set) || lb_ram(m17.set) == lb_ram(zd_set + 1'd1)));
+// a beat may come next clock unless q17's pixel ends an entry (written at q18) in the RAM it is
+// for: its set's, or the next set's when this clock's beat is its set's last
+wire [SB-1:0] cd_nx = (cd_v && rw0[cd_set] + cd_n + 9'd1 == rw1[cd_set]) ? cd_set + 1'd1 : cd_set;
+wire [SB-1:0] zd_nx = (zd_v && rw0[zd_set] + zd_n + 9'd1 == rw1[zd_set]) ? zd_set + 1'd1 : zd_set;
+assign io_memFbColorRead_readReady = !(wr17 && lb_ram(m17.set) == lb_ram(cd_nx));
+assign io_memFbAuxRead_readReady = !(wr17 && lb_ram(m17.set) == lb_ram(zd_nx));
 
 assign px_finish = m18.v && m18.last;
 assign px_fin_set = m18.set;

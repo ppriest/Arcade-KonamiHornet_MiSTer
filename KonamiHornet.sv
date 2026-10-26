@@ -323,7 +323,7 @@ wire [10:0] s_burst;
 wire [31:0] s_rdata, s_rdata_hi;
 
 wire        vid_ce, vid_de, vid_hb, vid_vb, vid_hs, vid_vs;
-wire        vblank, ppc_exec, dsp_exec, dsp_idle;
+wire        vblank, ppc_exec, dsp_exec, dsp_idle, dsp_unsup;
 wire        vid_overrun, ev_swapcmd, ev_v_write, ev_v_wait;
 wire [1:0]  v_displayed;
 wire [25:0] v_base0;
@@ -426,6 +426,7 @@ hornet_board board (
 	.ppc_dbg_we(1'b0), .ppc_dbg_wsel(6'd0), .ppc_dbg_wdata(32'h0),
 	.dsp_dbg_exec(dsp_exec), .dsp_dbg_pc(dsp_pc), .dsp_dbg_op(), .dsp_dbg_sel(6'd0), .dsp_dbg_val(),
 	.ev_dsp_idle(dsp_idle),
+	.ev_dsp_unsup(dsp_unsup),
 	.snd_wr, .snd_wreg, .snd_wdata, .snd_reply, .snd_live,
 	.dsp_dbg_pm_we(1'b0), .dsp_dbg_pm_addr(15'h0), .dsp_dbg_pm_wdata(48'h0),
 	.dsp_dbg_dm_we(1'b0), .dsp_dbg_dm_addr(15'h0), .dsp_dbg_dm_wdata(32'h0),
@@ -611,10 +612,10 @@ always @(posedge clk_sys) begin
 	if (ev_swapcmd) h_swap <= h_swap + 1'd1;
 end
 altsource_probe #(
-	.sld_auto_instance_index("YES"), .instance_id("H"), .probe_width(304), .source_width(1),
+	.sld_auto_instance_index("YES"), .instance_id("H"), .probe_width(305), .source_width(1),
 	.source_initial_value("0"), .enable_metastability("NO"), .lpm_type("altsource_probe")
 ) u_issp_h (
-	.probe({h_fr, v_base0, v_displayed, h_swap, h_abusy, h_bbusy, h_idle, h_mf, h_ddrr, h_ddrw,
+	.probe({dsp_unsup, h_fr, v_base0, v_displayed, h_swap, h_abusy, h_bbusy, h_idle, h_mf, h_ddrr, h_ddrw,
 	        h_vwait, h_vw, h_smax, h_sbur, h_cmax, h_cbusy, h_creq, h_ovr}),
 	.source(), .source_clk(clk_sys), .source_ena(1'b1)
 );

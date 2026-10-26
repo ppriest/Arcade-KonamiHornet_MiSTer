@@ -183,6 +183,7 @@ module hornet_board #(
     output logic        ev_dsp_reset,      // the PPC released the SHARC's RESET: it boots
     output logic        ev_swapcmd,        // swapbufferCMD written to the Voodoo
     output logic        ev_dsp_idle,       // the SHARC is idle
+    output logic        ev_dsp_unsup,      // the SHARC ran an instruction outside its subset (sticky, clk_dsp)
     output logic        ev_dev,            // a PPC device access answered this clock
     output logic [31:0] ev_dev_addr,
     output logic [31:0] ev_dev_data,
@@ -623,14 +624,14 @@ hornet_pulse u_sboot (.clk_a(clk), .a(ev_dsp_reset), .clk_b(clk_dsp), .b(dsp_boo
 hornet_pulse u_sirq0 (.clk_a(clk), .a(dsp_irq_assert[0]), .clk_b(clk_dsp), .b(dsp_irq[0]));
 hornet_pulse u_sirq1 (.clk_a(clk), .a(dsp_irq_assert[1]), .clk_b(clk_dsp), .b(dsp_irq[1]));
 
-sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0)) dsp (  // docs/HACKS.md
+sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0), .SUBSET(1), .ONE_FADD(1)) dsp (  // docs/HACKS.md
     .clk(clk_dsp), .reset(dsp_reset), .ce(dsp_ce), .boot(dsp_boot), .serial(1'b0),
     .ext_req(dx_req), .ext_we(dx_we), .ext_addr(dx_addr), .ext_wdata(dx_wdata),
     .ext_ack(dx_ack), .ext_rdata(dx_rdata), .ext_post(dx_post),
     .irq_in(3'b0), .irq_assert({1'b0, dsp_irq}), .irq_check_en(1'b1), .dbg_irq_set(32'h0),
     .dbg_iop_ovr(1'b0), .dbg_iop_val(32'h0),
     .dbg_exec(dsp_dbg_exec), .dbg_pc(dsp_dbg_pc), .dbg_op(dsp_dbg_op), .dbg_sel(dsp_dbg_sel),
-    .dbg_val(dsp_dbg_val), .dbg_idle(ev_dsp_idle),
+    .dbg_val(dsp_dbg_val), .dbg_idle(ev_dsp_idle), .unsup(ev_dsp_unsup),
     .dbg_pm_we(dsp_dbg_pm_we), .dbg_pm_addr(dsp_dbg_pm_addr), .dbg_pm_wdata(dsp_dbg_pm_wdata),
     .dbg_dm_we(dsp_dbg_dm_we), .dbg_dm_addr(dsp_dbg_dm_addr), .dbg_dm_wdata(dsp_dbg_dm_wdata),
     .dbg_we(dsp_dbg_we), .dbg_wsel(dsp_dbg_wsel), .dbg_widx(dsp_dbg_widx), .dbg_wdata(dsp_dbg_wdata)
@@ -645,6 +646,13 @@ assign shs_hi    = !dx_addr[0];
 assign shs_wdata = dx_wdata[15:0];
 assign shs_we    = dsp_ce && dx_req && dx_we && dx_sh && !sh_ph;
 
+// The Voodoo's status register, read in clk_dsp from a snapshot (hornet_snap, some six clocks old
+// at the most) once the queue holds no write of the SHARC's before it: the game polls it before
+// each triangle's registers (16,736 reads in one frame of 44400, each a round trip through the
+// queue otherwise).
+logic [31:0] v_status, vst_dsp;
+hornet_snap #(.DW(32)) u_vst (.clk_a(clk), .d(v_status), .clk_b(clk_dsp), .q(vst_dsp));
+wire  dx_vst = dx_req && !dx_we && dx_addr >= 32'h0240_0000 && dx_addr < 32'h0280_0000 && dx_addr[7:0] == 8'h00;
 // everything else: queued for the board ({we, word address, data}); a write is answered as it is
 // queued, a single read when the board's answer has crossed back (cr_*). Port B's regions (the
 // SHARC's DMA streams from RAM 0x1400000) are read through two lines of 8 words on this side: a
@@ -653,7 +661,7 @@ assign shs_we    = dsp_ce && dx_req && dx_we && dx_sh && !sh_ph;
 // (it may switch the CG ROM bank) drops both.
 typedef enum logic [1:0] { DB_IDLE, DB_RD, DB_RDY } db_t;
 db_t         dbs;
-logic        cq_full, cq_empty, cq_pop, cq_push, cq_room2;
+logic        cq_full, cq_empty, cq_pop, cq_push, cq_room2, cq_wempty;
 // a write the SHARC asks for next clock is taken then (posted DMA writes): two free in the queue and
 // no single read under way
 assign       dx_post = cq_room2 && dbs == DB_IDLE;
@@ -664,9 +672,9 @@ logic        rq_full, rq_empty, rq_pop, rq_push;
 logic [31:0] rq_head;
 hornet_afifo #(.AW(3), .DW(59)) u_cq (
     .clk_w(clk_dsp), .rst_w(dsp_reset), .w_push(cq_push), .w_data(cq_in), .w_full(cq_full), .w_room2(cq_room2),
-    .clk_r(clk), .rst_r(reset), .r_pop(cq_pop), .r_data(cq_head), .r_empty(cq_empty));
+    .w_empty(cq_wempty), .clk_r(clk), .rst_r(reset), .r_pop(cq_pop), .r_data(cq_head), .r_empty(cq_empty));
 hornet_afifo #(.AW(4), .DW(32)) u_rq (
-    .clk_w(clk), .rst_w(reset), .w_push(rq_push), .w_data(x_rdata), .w_full(rq_full),
+    .clk_w(clk), .rst_w(reset), .w_push(rq_push), .w_data(x_rdata), .w_full(rq_full), .w_empty(),
     .clk_r(clk_dsp), .rst_r(dsp_reset), .r_pop(rq_pop), .r_data(rq_head), .r_empty(rq_empty));
 hornet_pulse u_cr (.clk_a(clk), .a(cr_t), .clk_b(clk_dsp), .b(cr_new));
 
@@ -698,7 +706,8 @@ wire         d_brd = dx_req && !dx_we && dx_b;
 wire         l_ack = dsp_ce && d_brd && lhit && lword && dbs == DB_IDLE;
 // a push this clock: the request itself (a write, or a single read), else a miss's line, else
 // the line after the one in use
-wire         dq_go = dsp_ce && dx_req && !dx_sh && !d_brd && dbs == DB_IDLE && !cq_full;
+wire         dq_go = dsp_ce && dx_req && !dx_sh && !d_brd && !dx_vst && dbs == DB_IDLE && !cq_full;
+wire         v_ack = dsp_ce && dx_vst && cq_wempty && dbs == DB_IDLE;
 wire         lv    = !l_mru;            // a miss's slot: the one not used last
 wire         miss_go = d_brd && !lhit && !lfilling[lv] && !(f_any && fq_n) && !cq_full && !dq_go;
 wire  [22:0] nl = dl + 23'd1;
@@ -745,8 +754,8 @@ always_ff @(posedge clk_dsp) begin
     if (dsp_reset) begin sh_ph <= 1'b0; dbs <= DB_IDLE; la <= 2'b00; f_any <= 1'b0; fq_n <= 1'b0; end
 end
 always_comb begin
-    dx_ack = sh_ph || (dq_go && dx_we) || dbs == DB_RDY || l_ack;
-    dx_rdata = sh_ph ? {16'h0, shs_hi ? shs_q[31:16] : shs_q[15:0]} : l_ack ? lq : cr_dsp;
+    dx_ack = sh_ph || (dq_go && dx_we) || dbs == DB_RDY || l_ack || v_ack;
+    dx_rdata = sh_ph ? {16'h0, shs_hi ? shs_q[31:16] : shs_q[15:0]} : l_ack ? lq : v_ack ? vst_dsp : cr_dsp;
 end
 
 // ---------------------------------------------------------------- the board's side
@@ -1030,7 +1039,7 @@ vraster #(.RECIP_HEX(RECIP_HEX)) voodoo (
     .io_memFifo_readDataHi(v_mf_rdata_hi), .io_memFifo_readDataValid(v_mf_rvalid), .io_memFifo_readData(v_mf_rdata),
     .io_vRetrace(vblank),
     .io_displayedBuffer(v_displayed), .io_buffer0Base(v_base0), .io_buffer1Base(v_base1),
-    .io_pixelStride(v_stride), .io_dbg(v_dbg), .io_ring_off(v_ring_off), .io_ring_bad(v_ring_bad)
+    .io_pixelStride(v_stride), .io_dbg(v_dbg), .io_status(v_status), .io_ring_off(v_ring_off), .io_ring_bad(v_ring_bad)
 );
 
 hornet_video video (

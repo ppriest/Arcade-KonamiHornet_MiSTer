@@ -126,14 +126,14 @@ function automatic laddr_t laddr_unpack(input logic [31:0] v);
 endfunction
 
 task automatic op_push_loop(inout xc_t c);
-    if (Q.lstkp > 0) begin
-        c.s.lcstack[Q.lstkp - 1] = Q.curlcntr;
-        c.s.lastack[Q.lstkp - 1] = laddr_pack(Q.laddr);
+    if (Q.lstkp > 0 && Q.lstkp < 7) begin              // lcstack, lastack [LSTKP - 1]
+        c.lcw = 1'b1; c.lcd = Q.curlcntr;
+        c.law = 1'b1; c.lad = laddr_pack(Q.laddr);
     end
     c.s.curlcntr = Q.lcntr;
-    c.s.laddr = laddr_unpack(Q.lastack[Q.lstkp]);
+    c.s.laddr = laddr_unpack(la_rd);                   // lastack[LSTKP]
     c.s.lstkp = Q.lstkp + 1;
-    if (Q.lstkp + 1 < 6) c.s.lcntr = Q.lcstack[Q.lstkp + 1];
+    if (Q.lstkp + 1 < 6) c.s.lcntr = lc_rd;            // lcstack[LSTKP + 1]
     else c.s.lcntr = 32'hFFFF_FFFF;
     stky_upd(c, LSEM, 32'h0);
 endtask
@@ -144,10 +144,10 @@ task automatic op_pop_loop(inout xc_t c, input logic [31:0] cur);
     p = Q.lstkp - 1;
     c.s.lstkp = p;
     c.s.lcntr = cur;
-    c.s.lastack[p] = laddr_pack(Q.laddr);
+    if (p < 6) begin c.law = 1'b1; c.lad = laddr_pack(Q.laddr); end     // lastack[p]
     if (p > 0) begin
-        c.s.curlcntr = Q.lcstack[p - 1];
-        c.s.laddr = laddr_unpack(Q.lastack[p - 1]);
+        c.s.curlcntr = lc_rd;                          // lcstack[p - 1]
+        c.s.laddr = laddr_unpack(la_rd);               // lastack[p - 1]
     end else begin
         c.s.curlcntr = 32'hFFFF_FFFF;
         c.s.laddr = laddr_unpack(32'hFFFF_FFFF);
@@ -165,8 +165,7 @@ endfunction
 
 task automatic op_push_status(inout xc_t c);
     c.s.status_stkp = Q.status_stkp + 1;
-    c.s.ss_mode1[Q.status_stkp] = Q.mode1;
-    c.s.ss_astat[Q.status_stkp] = astat_read(c);
+    if (Q.status_stkp < 5) begin c.ssw = 1'b1; c.ssm = Q.mode1; c.ssa = astat_read(c); end
     stky_upd(c, SSEM, 32'h0);
 endtask
 
@@ -193,9 +192,9 @@ task automatic op_pop_status(inout xc_t c);
     logic [31:0] p;
     p = Q.status_stkp - 1;
     c.s.status_stkp = p;
-    mode1_write(c, Q.ss_mode1[p]);
+    mode1_write(c, ssm_rd);                            // ss_mode1[p]
     // set_ureg(ASTAT, (astat & FLGS) | (ss & ~FLGS)): the flag bits kept
-    astat_upd(c, ~FLGS, Q.ss_astat[p] & ~FLGS);
+    astat_upd(c, ~FLGS, ssa_rd & ~FLGS);               // ss_astat[p]
     if (p == 0) stky_upd(c, 32'h0, SSEM);
 endtask
 
@@ -500,7 +499,7 @@ task automatic execute_op(inout xc_t c, input logic [47:0] op, input logic pre_c
     j = op[26]; e = op[25]; la = op[38];
 
     casez (op[47:39])
-    9'b001??????: begin
+    9'b001??????: if (!SUBSET) begin      // type 1: not in gradius4's program
         logic [3:0]  pmd_r, dmd_r;
         logic [2:0]  pmi, dmi;
         pmd_r = op[26:23]; dmd_r = op[36:33]; pmi = op[32:30]; dmi = op[43:41];

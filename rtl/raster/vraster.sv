@@ -119,6 +119,7 @@ module vraster #(
     // status for the debug probes: {triangle started, fill started, command state, FIFO empty,
     // FIFO full, ring in use, staging empty, swaps pending, front buffer}
     output logic [15:0] io_dbg,
+    output logic [31:0] io_status,      // the status register's value now (hornet_board answers the SHARC's reads of it)
     input  logic        io_ring_off,    // debug: never use the memory FIFO's ring
     output logic        io_ring_bad     // debug: a ring entry read back was not the one written
 );
@@ -399,10 +400,10 @@ endfunction
 always_comb begin
     logic busy;
     busy = !f_empty || cs != C_IDLE || !s_empty || ring_used || drain_pend;
+    io_status = {1'b0, swaps_pending, 16'hFFFF, frontbuf, {3{busy}}, io_vRetrace, s_full ? 6'h00 : 6'h3F};
     rd_data = 32'h0;
     case (io_h2fLw_address[7:0])
-    8'h00: rd_data = {1'b0, swaps_pending, 16'hFFFF, frontbuf, {3{busy}}, io_vRetrace,
-                      s_full ? 6'h00 : 6'h3F};
+    8'h00: rd_data = io_status;
     8'h84: rd_data = fbiInit0;
     8'h85: rd_data = fbiInit1;
     8'h86: rd_data = fbiInit2;
@@ -426,13 +427,13 @@ end
 
 // memTex: the texture cache's fills, or the command processor's texture writes (a beat, the word's
 // half enabled). A fill's row is whole beats: an 8-bit row at an odd word starts a word early
-wire [21:0] tf_a = texel_addr(cf_s, cf_t + {6'h0, cf_rq});
+wire [21:0] tf_a = texel_addr(rq_s, rq_t + {6'h0, rq_r});
 assign tex_clear = cs == C_TEXW && io_memTex_waitRequestn;
-assign io_memTex_read = fls == F2_REQ;
+assign io_memTex_read = fls == F2_REQ || rq_n;
 assign io_memTex_write = cs == C_TEXW;
 assign io_memTex_address = TEX_BASE + {10'h0, (cs == C_TEXW) ? texw_a[21:3] : tf_a[21:3], 3'b000};
-assign io_memTex_burstCount = (cs == C_TEXW) ? 11'd2 : t16 ? {6'h0, cf_kn, 1'b0}
-                                                         : {6'h0, (5'(tf_a[2]) + 5'(cf_kn) + 5'd1) & 5'h1E};
+assign io_memTex_burstCount = (cs == C_TEXW) ? 11'd2 : t16 ? {6'h0, rq_kn, 1'b0}
+                                                         : {6'h0, (5'(tf_a[2]) + 5'(rq_kn) + 5'd1) & 5'h1E};
 assign io_memTex_byteEnable = (cs == C_TEXW && texw_a[2]) ? 4'h0 : 4'hF;
 assign io_memTex_byteEnableHi = (cs == C_TEXW && !texw_a[2]) ? 4'h0 : 4'hF;
 assign io_memTex_writeData = c_data;

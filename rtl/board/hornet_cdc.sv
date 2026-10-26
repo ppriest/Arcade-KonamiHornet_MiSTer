@@ -28,6 +28,27 @@ module hornet_pulse (
     always_ff @(posedge clk_b) begin s_q <= s; b <= s != s_q; end
 endmodule
 
+// a bus, as a snapshot the destination takes whole: the source holds a copy and toggles a request
+// when the last one was acknowledged, the destination takes the copy when the request arrives (two
+// flops) and toggles the acknowledge back. The copy is some six source clocks old at the most.
+module hornet_snap #(
+    parameter int DW = 32
+) (
+    input  logic          clk_a,
+    input  logic [DW-1:0] d,
+    input  logic          clk_b,
+    output logic [DW-1:0] q
+);
+    logic          t_a = 1'b0, t_b = 1'b0, a_b, a_b_q, ack_a;
+    logic [DW-1:0] hold;
+    hornet_sync u_req (.clk(clk_b), .d(t_a), .q(a_b));
+    hornet_sync u_ack (.clk(clk_a), .d(t_b), .q(ack_a));
+    always_ff @(posedge clk_a) if (t_a == ack_a) begin hold <= d; t_a <= !t_a; end
+    always_ff @(posedge clk_b) begin
+        a_b_q <= a_b;
+        if (a_b != a_b_q) begin q <= hold; t_b <= !t_b; end
+    end
+endmodule
 // a FIFO of 2^AW words of DW bits: written on clk_w, read on clk_r (show-ahead: r_data is the
 // head while !r_empty, r_pop takes it). Full and empty are each seen a few clocks late from the
 // other side's pointer, which only costs room.
@@ -41,6 +62,7 @@ module hornet_afifo #(
     input  logic [DW-1:0] w_data,
     output logic          w_full,
     output logic          w_room2,      // two or more free
+    output logic          w_empty,      // nothing left, as the write side sees it (a few clocks late)
     input  logic          clk_r,
     input  logic          rst_r,
     input  logic          r_pop,
@@ -70,6 +92,7 @@ module hornet_afifo #(
     always_ff @(posedge clk_w) begin rg_s1 <= rg; rg_w <= rg_s1; end
     assign w_full = (wb - g2b(rg_w)) == (AW + 1)'(1 << AW);
     assign w_room2 = (wb - g2b(rg_w)) <= (AW + 1)'((1 << AW) - 2);
+    assign w_empty = wb == g2b(rg_w);
 
     // read side
     always_ff @(posedge clk_r) begin

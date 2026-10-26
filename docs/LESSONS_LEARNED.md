@@ -539,6 +539,18 @@ window had an 8-bit fill, so every bench passed. Capture a window for each textu
 uses, and give a port shared by two writers either an arbiter or a simulation check that they never
 meet.
 
+### [KonamiHornet] On a shared in-order return path, one master's readReady stalls them all
+
+`hornet_ddr3` returns every master's read data through one FIFO, in command order; a master that
+holds readReady low holds the FIFO's head, and the texture fills' data behind it. vraster's
+frame-buffer reader held it whenever the pixel pipeline wrote the line-buffer RAM the next beat
+might go to (two RAMs of four, a clock per pixel), and the texture fill held it while clearing a
+run's tags with the run's data already queued. Counting the clocks the head waits on each master's
+readReady (board_tb +vprof) found 81k of the lava frame's 1,095k; narrowing the reader's rule to
+the one RAM and writing pixels an entry at a time cut it to 30k, and with the next run's tags
+cleared early the frame's overrun fell 30%. Before adding outstanding requests to a shared port, count what
+holds its return path.
+
 ## Sprite lists, line buffers and snapshots
 
 ### A swap is not a copy
@@ -868,6 +880,14 @@ mirror passes a fill-then-verify test if a write tap shows nothing else writes t
   0x200000. A first fix wrote a 24-bit concatenation into the 23-bit address and changed nothing;
   the width lint (`-Wno-lint` off) flags that.
 
+### [KonamiHornet] A bench with random memory stalls cannot rank a few-percent change from one run
+
+board_tb's DDR3 model asserts BUSY at random (+ddrbusy, 10% by default). Any RTL change shifts the
+draw by a clock somewhere and re-deals every later stall, so the lava frame's tail into the next
+frame moved between 155k and 235k clocks on unchanged RTL across BUSY settings, while the changes
+being ranked moved it by 5-15%. Rank changes with +ddrbusy=0 (and at the board's measured latency,
++ddrlat=15), and keep the random BUSY for protocol coverage.
+
 ## Timing closure
 
 - **[BallySente] Ask the timing analyser which path fails; do not reason about it.** A filter
@@ -970,6 +990,16 @@ The critical path ran register file -> CPU data out -> peripheral address decode
 and spending one more cycle in the access state machine closed it (+0.011 ns); the CPU steps once in
 six clocks, so the cycle is free. A peripheral hanging combinationally off the CPU bus is
 structural; a multicycle over it is a promise the design does not make.
+
+### [KonamiHornet] Register retiming can rename a multicycle source out of its constraint
+
+With `PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON`, the fitter moved the SHARC slow unit's `mc_op`
+register past its decode into `by_OTERM11997`. The SDC's multicycle matches `*u_alu|mc_op*`, so every
+path from the new register was timed in one clock: clk_dsp -0.632 ns at a seed that met before the
+change beside it. A qsf `set_instance_assignment PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF` on the
+instance was silently ignored by Quartus 17.0 (not in Ignored Assignments, the build identical).
+`(* preserve *)` on the multicycle's source registers worked: +0.964 ns. When a multicycle fails,
+check whether its source names in the worst paths still match the SDC's patterns.
 
 ## CPU cores (TG68K.C, T80, vendored CPUs)
 

@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <unordered_set>
 #include <sstream>
 #include <set>
 #include <string>
@@ -270,6 +271,8 @@ struct Ddr {
 
 // ------------------------------------------------------------------------------------------
 
+static bool unsup_seen = false;    // ev_dsp_unsup reported once
+
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
     const char *s;
@@ -296,7 +299,7 @@ int main(int argc, char **argv) {
     unsigned long long dd[15] = {0}, dc[8] = {0};
     bool tf_q = false;
     uint64_t tx_seq[7] = {}, tx_gap[5] = {};
-    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_hs[4] = {}, vp_fl[5] = {}, vp_wr[5] = {};
+    uint64_t tx_fmt[16] = {}, tx_hold[2] = {}, vp_cs[16] = {}, vp_ts[16] = {}, vp_tris = 0, vp_mode[32] = {}, vp_st[8] = {}, vp_px[4] = {}, vp_ns[8] = {}, vp_hol[8] = {}, vp_nw[16] = {}, vp_nq[4] = {}, vp_hs[4] = {}, vp_fl[5] = {}, vp_fk[4] = {}, vp_mc[2] = {}, vp_ms[6] = {}, vp_wr[5] = {};
     if ((s = Verilated::commandArgsPlusMatch("ddrlat=")) && *s) ddr.lat = atoi(s + 8);
     if ((s = Verilated::commandArgsPlusMatch("ddrbusy=")) && *s) ddr.busy_pct = atoi(s + 9);
     // +ringoff: vraster's memory FIFO without its DDR3 ring (the stp revision's debug switch)
@@ -992,6 +995,10 @@ int main(int argc, char **argv) {
         }
         if (t->ev_v_wait) v_wait++;
         if (t->ev_dsp_idle) d_idle++;
+        if (t->ev_dsp_unsup && !unsup_seen) {
+            fprintf(stderr, "frame %d line %d: the SHARC ran an instruction outside its subset\n", frame + 1, (int)t->vpos);
+            unsup_seen = true;
+        }
         // port B's line reads for the SHARC (clk_sys): clocks a line's request waits, words taken,
         // lines, clocks a SHARC request waits in the crossing queue
         {
@@ -1022,6 +1029,14 @@ int main(int argc, char **argv) {
             if (g & 0x20) dd[7]++;                             // write beats
             if (g & 0x40) dd[8]++;                             // beats in
             if (g & (1u << 23)) { dd[9] += (g >> 12) & 0x7FF; dd[10]++; }
+            {   // the return FIFO's head held by its master's readReady, by master
+                auto *r = t->rootp;
+                if (r->tb_board__DOT__ddr3__DOT__t_on && r->tb_board__DOT__ddr3__DOT__rf_qv) {
+                    unsigned m = (r->tb_board__DOT__ddr3__DOT__t_cur >> 12) & 7;
+                    bool rdy = m == 3 ? t->v_fbcr_rready : m == 4 ? t->v_fbar_rready : m == 5 ? t->v_tex_rready : true;
+                    if (!rdy) vp_hol[m]++;
+                }
+            }
             // vraster: clocks a missing texel holds the pipeline, fills, clocks drawing triangles
             if (t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__miss) dd[11]++;
             if (t->v_dbg & 0x20) {
@@ -1089,10 +1104,20 @@ int main(int argc, char **argv) {
             // ready, ready but its sibling's RAM busy
             if (((t->v_dbg >> 10) & 15) == 8) {
                 auto *r = t->rootp;
-                unsigned ps = r->tb_board__DOT__dut__DOT__voodoo__DOT__px_set & 7;
+                unsigned ps = r->tb_board__DOT__dut__DOT__voodoo__DOT__px_set & 15;
                 if (r->tb_board__DOT__dut__DOT__voodoo__DOT__miss) vp_px[1]++;
                 else if (r->tb_board__DOT__dut__DOT__voodoo__DOT__px_run) vp_px[0]++;
-                else if ((r->tb_board__DOT__dut__DOT__voodoo__DOT__st[ps] & 7) != 2) vp_px[2]++;
+                else if ((r->tb_board__DOT__dut__DOT__voodoo__DOT__st[ps] & 7) != 2) {
+                    vp_px[2]++; vp_ns[r->tb_board__DOT__dut__DOT__voodoo__DOT__st[ps] & 7]++;
+                    if ((r->tb_board__DOT__dut__DOT__voodoo__DOT__st[ps] & 7) == 0) {
+                        vp_nw[r->tb_board__DOT__dut__DOT__voodoo__DOT__ts & 15]++;
+                        // a span waiting: at the walker (e_v), for the reader (sd_v), the reader's requests out (rs)
+                        if (r->tb_board__DOT__dut__DOT__voodoo__DOT__rs) vp_nq[2]++;
+                        else if (r->tb_board__DOT__dut__DOT__voodoo__DOT__sd_v) vp_nq[1]++;
+                        else if (r->tb_board__DOT__dut__DOT__voodoo__DOT__e_v) vp_nq[0]++;
+                        else vp_nq[3]++;
+                    }
+                }
                 else if (!r->tb_board__DOT__dut__DOT__voodoo__DOT__px_start) vp_px[3]++;
             }
             {   // ... and the frame-buffer read masters' handshakes and beats at hornet_ddr3
@@ -1120,10 +1145,65 @@ int main(int argc, char **argv) {
                 static unsigned f_q = 0; static bool got = false;
                 if (f == 1 && f_q != 1) got = false;
                 if ((f == 1 || f == 2) && !got) { vp_fl[4]++; if (t->rootp->tb_board__DOT__dm_rvalid & 32) got = true; }
+                // fills by kind, and the clocks a miss waits behind a running fill of each kind
+                bool pf = t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__cf_pf;
+                if (t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__iv_we && t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__cf_iv == 0) vp_fk[pf ? 1 : 0]++;   // a run starts with its first tag clear
+                if (t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__n_iv_we && t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__n_iv == 0)
+                    vp_fk[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__n_pf ? 1 : 0]++;   // ... the next run's, early
+                if (f != 0 && t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__miss) vp_fk[pf ? 3 : 2]++;
                 f_q = f;
+                // a miss's tile: one never filled before (first touch) or one filled and since evicted
+                {
+                    static std::unordered_set<uint32_t> filled;
+                    auto *r = t->rootp;
+                    if (r->tb_board__DOT__dut__DOT__voodoo__DOT__tg_we && (r->tb_board__DOT__dut__DOT__voodoo__DOT__tg_wd >> 27))
+                        filled.insert(r->tb_board__DOT__dut__DOT__voodoo__DOT__tg_wd & 0x7FFFFFF);
+                    unsigned m = r->tb_board__DOT__dut__DOT__voodoo__DOT__miss;
+                    // +tlog=file: each textured pixel's tiles as it passes q11, {tag, slot} a tap (a frame
+                    // ends with tag 0xFFFFFFFF), for replaying other cache organisations offline
+                    static FILE *tlog = nullptr; static bool tlog_q = false;
+                    if (!tlog_q) {
+                        tlog_q = true;
+                        const char *s = Verilated::commandArgsPlusMatch("tlog=");
+                        if (s && *s) tlog = fopen(s + 6, "wb");
+                    }
+                    if (tlog && !m && (r->tb_board__DOT__dut__DOT__voodoo__DOT__m11 >> 54 & 1) &&
+                        (r->tb_board__DOT__dut__DOT__voodoo__DOT__fbzColorPath >> 27 & 1)) {
+                        bool bil = r->tb_board__DOT__dut__DOT__voodoo__DOT__tc11 >> 40 & 1;
+                        for (int k = 0; k < (bil ? 4 : 1); k++) {
+                            uint32_t rec[2] = {r->tb_board__DOT__dut__DOT__voodoo__DOT__tag11[k],
+                                               r->tb_board__DOT__dut__DOT__voodoo__DOT__slot11[k]};
+                            fwrite(rec, 4, 2, tlog);
+                        }
+                    }
+                    static int tlog_frame = -1;
+                    if (tlog && tlog_frame != frame) { uint32_t rec[2] = {0xFFFFFFFFu, (uint32_t)frame}; fwrite(rec, 4, 2, tlog); tlog_frame = frame; fflush(tlog); }
+                    // the slot's last write: 0 global clear, 1 a miss fill's run clear, 2 a prefetch's,
+                    // 3 a miss fill's tile, 4 a prefetch's tile
+                    static uint32_t sh_tag[1024]; static uint8_t sh_src[1024];
+                    if (r->tb_board__DOT__dut__DOT__voodoo__DOT__tg_we) {
+                        unsigned a = r->tb_board__DOT__dut__DOT__voodoo__DOT__tg_wa & 1023;
+                        uint32_t d = r->tb_board__DOT__dut__DOT__voodoo__DOT__tg_wd;
+                        bool p = r->tb_board__DOT__dut__DOT__voodoo__DOT__cf_pf;
+                        sh_tag[a] = d;
+                        sh_src[a] = r->tb_board__DOT__dut__DOT__voodoo__DOT__tag_clr ? 0 : !(d >> 27) ? (p ? 2 : 1) : (p ? 4 : 3);
+                    }
+                    if (f == 0 && m) {
+                        int k = (m & 1) ? 0 : (m & 2) ? 1 : (m & 4) ? 2 : 3;
+                        uint32_t x = r->tb_board__DOT__dut__DOT__voodoo__DOT__tag11[k];
+                        unsigned sl = r->tb_board__DOT__dut__DOT__voodoo__DOT__slot11[k] & 1023;
+                        vp_mc[filled.count(x) ? 1 : 0]++;
+                        if (filled.count(x)) vp_ms[(sh_tag[sl] >> 27) ? sh_src[sl] : sh_src[sl]]++;
+                        if (filled.count(x) && (sh_tag[sl] >> 27) && (sh_tag[sl] & 0x7FFFFFF) == x) vp_ms[5]++;
+                        if (tlog && filled.count(x)) {
+                            uint32_t rec[2] = {0xFFFFFFFEu, x}, rec2[2] = {sh_tag[sl], sh_src[sl]};
+                            fwrite(rec, 4, 2, tlog); fwrite(rec2, 4, 2, tlog);
+                        }
+                    }
+                }
             }
             // ... line-buffer set-clocks by state (free, read, ready, proc, done, write)
-            for (int k = 0; k < 8; k++) vp_st[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__st[k] & 7]++;
+            for (int k = 0; k < 16; k++) vp_st[t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__st[k] & 7]++;
             // ... and drawing clocks by {chroma key, depth test, aux write, alpha test, blend}
             if (((t->v_dbg >> 10) & 15) == 8) {
                 uint32_t fz = t->rootp->tb_board__DOT__dut__DOT__voodoo__DOT__fbzMode;
@@ -1256,9 +1336,11 @@ int main(int argc, char **argv) {
                             frame, (unsigned long long)vp_st[0], (unsigned long long)vp_st[1], (unsigned long long)vp_st[2],
                             (unsigned long long)vp_st[3], (unsigned long long)vp_st[4], (unsigned long long)vp_st[5]);
                 if (Verilated::commandArgsPlusMatch("vprof")[0])
-                    fprintf(stderr, "frame %d pixel pipeline: issuing %llu, fill %llu, no set %llu, sibling %llu\n", frame,
+                    fprintf(stderr, "frame %d pixel pipeline: issuing %llu, fill %llu, no set %llu (free %llu, reading %llu, "
+                            "other %llu), sibling %llu\n", frame,
                             (unsigned long long)vp_px[0], (unsigned long long)vp_px[1], (unsigned long long)vp_px[2],
-                            (unsigned long long)vp_px[3]);
+                            (unsigned long long)vp_ns[0], (unsigned long long)vp_ns[1],
+                            (unsigned long long)(vp_px[2] - vp_ns[0] - vp_ns[1]), (unsigned long long)vp_px[3]);
                 if (Verilated::commandArgsPlusMatch("vprof")[0])
                     fprintf(stderr, "frame %d span writer: %llu spans; clocks starting %llu, reading the line buffer %llu, "
                             "writing %llu\n", frame, (unsigned long long)vp_wr[4],
@@ -1272,8 +1354,32 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "frame %d texture fill states: request %llu, data %llu, tags %llu, wait %llu; to first data %llu\n",
                             frame, (unsigned long long)vp_fl[0], (unsigned long long)vp_fl[1], (unsigned long long)vp_fl[2],
                             (unsigned long long)vp_fl[3], (unsigned long long)vp_fl[4]);
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d texture fills: %llu for misses, %llu prefetches; a miss waited %llu clocks behind a miss's fill, %llu behind a prefetch\n",
+                            frame, (unsigned long long)vp_fk[0], (unsigned long long)vp_fk[1], (unsigned long long)vp_fk[2], (unsigned long long)vp_fk[3]);
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d miss fills by tile: %llu first touch, %llu filled before and evicted%c", frame,
+                            (unsigned long long)vp_mc[0], (unsigned long long)vp_mc[1], 10);
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d evicted tile's slot last written by: global clear %llu, miss run clear %llu, prefetch run clear %llu, "
+                            "miss tile %llu, prefetch tile %llu; slot holding the same tile %llu%c", frame,
+                            (unsigned long long)vp_ms[0], (unsigned long long)vp_ms[1], (unsigned long long)vp_ms[2],
+                            (unsigned long long)vp_ms[3], (unsigned long long)vp_ms[4], (unsigned long long)vp_ms[5], 10);
+                memset(vp_fk, 0, sizeof vp_fk); memset(vp_mc, 0, sizeof vp_mc); memset(vp_ms, 0, sizeof vp_ms);
                 memset(vp_fl, 0, sizeof vp_fl);
-                memset(vp_px, 0, sizeof vp_px);
+                if (Verilated::commandArgsPlusMatch("vprof")[0]) {
+                    static const char *tn[9] = {"idle", "sort", "div", "row0", "line", "clip", "span", "next", "drain"};
+                    fprintf(stderr, "frame %d waiting on the walker, by its state:", frame);
+                    for (int k = 0; k < 9; k++) fprintf(stderr, " %s %llu", tn[k], (unsigned long long)vp_nw[k]);
+                    fprintf(stderr, "; a span at the walker %llu, at the reader %llu, reader requesting %llu, none %llu%c",
+                            (unsigned long long)vp_nq[0], (unsigned long long)vp_nq[1], (unsigned long long)vp_nq[2],
+                            (unsigned long long)vp_nq[3], 10);
+                }
+                if (Verilated::commandArgsPlusMatch("vprof")[0])
+                    fprintf(stderr, "frame %d return FIFO head held by readReady: colour reads %llu, depth reads %llu, texture %llu%c", frame,
+                            (unsigned long long)vp_hol[3], (unsigned long long)vp_hol[4], (unsigned long long)vp_hol[5], 10);
+                memset(vp_hol, 0, sizeof vp_hol);
+                memset(vp_px, 0, sizeof vp_px); memset(vp_ns, 0, sizeof vp_ns); memset(vp_nw, 0, sizeof vp_nw); memset(vp_nq, 0, sizeof vp_nq);
                 memset(vp_st, 0, sizeof vp_st);
                 memset(vp_mode, 0, sizeof vp_mode);
                 memset(vp_cs, 0, sizeof vp_cs); memset(vp_ts, 0, sizeof vp_ts); vp_tris = 0;
