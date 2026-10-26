@@ -12,7 +12,10 @@
 // The core applies X's flag updates at the X edge and W's at the W edge, W's first: W holds the
 // older instruction.
 
-module sharc2_alu (
+module sharc2_alu #(
+    parameter bit SUBSET = 0,          // the game's subset of the compute operations (sharc2_pkg comp_unsup)
+    parameter bit ONE_FADD = 0         // the dual forms' subtract through adder 0 too: X held a clock more
+) (
     input  logic        clk,
     input  logic        ce,
 
@@ -59,8 +62,8 @@ import sharc_fp_pkg::*;
 import sharc2_pkg::*;
 
 cinfo_t xi, di;
-assign xi = x_comp_on ? comp_info(x_comp) : '0;
-assign di = d_comp_on ? comp_info(d_comp) : '0;
+assign xi = x_comp_on ? comp_info(x_comp, SUBSET) : '0;
+assign di = d_comp_on ? comp_info(d_comp, SUBSET) : '0;
 assign x_needs_astat = x_exec && xi.needs_astat;
 
 // ---------------------------------------------------------------- X: one-clock units
@@ -75,7 +78,7 @@ always_comb begin
     x_mrf_we = 1'b0; x_mrb_we = 1'b0; x_mr_d = 64'h0;
     // one shifter for the immediate and the compute-field forms
     sh = shifter(x_shimm ? x_shimm_op : op[7:2], x_shimm ? {20'h0, x_shimm_data} : ay, x_shimm,
-                 x_shimm ? x_shimm_rn : x_comp[11:8], ax, xe);
+                 x_shimm ? x_shimm_rn : x_comp[11:8], ax, xe, SUBSET);
     // the result whether or not it executes: x_exec is late (condition, handler) and gates only
     // the enables, so that the register numbers do not wait for it
     if (x_shimm)
@@ -84,12 +87,12 @@ always_comb begin
         if (!x_comp[22]) begin
             case (x_comp[21:20])
             2'd0: if (op >= 8'h70 && op <= 8'h7f) o = alu_dual(x_comp[11:8], x_comp[15:12], ax, ay, alusat);
-                  else o = alu_fixed(op, x_comp[11:8], ax, ay, astat_in, alusat);
+                  else o = alu_fixed(op, x_comp[11:8], ax, ay, astat_in, alusat, SUBSET);
             2'd1: if (op == 8'h14) x_mrf_we = 1'b1; else x_mrb_we = 1'b1;
             default: o = sh;
             endcase
         end else case (mop)
-        6'h00: begin
+        6'h00: if (!SUBSET) begin
             o.we0 = 1'b1; o.r0 = x_comp[11:8];
             case (op[3:0])
             4'd0: o.d0 = mrf[31:0];
@@ -108,7 +111,7 @@ always_comb begin
             endcase
             o.aclr = MUL_FLAGS;
         end
-        default: o = alu_mf(x_comp[11:8], mop == 6'h05, ax, ay);    // 04, 05
+        default: if (!SUBSET) o = alu_mf(x_comp[11:8], mop == 6'h05, ax, ay);    // 04, 05
         endcase
     end
     xw_we = x_exec ? {o.we1, o.we0} : 2'b00;
@@ -122,11 +125,19 @@ end
 
 logic [31:0] fa0_r, fa0_a, fa0_s, fa1_r, fa1_a, fa1_s, fm_r, fm_a, fm_s;
 logic        fa0_nan, fa0_infb, fm_busy;
+// ONE_FADD: a dual form's first X clock holds X and loads adder 0 with the subtract (fa0_first);
+// its result, on adder 0's output while X waits, is kept as adder 1's (fs_*); the add follows at x_go
+logic        x_dl, dual_n, fa0_first;
+assign fa0_first = ONE_FADD && x_dl && !dual_n;
 
-sharc_fadd u_fadd0 (.clk, .en(ce && x_go), .x(ax), .y(ay), .sub(xi.sub), .trunc,
+sharc_fadd u_fadd0 (.clk, .en(ce && (x_go || fa0_first)), .x(ax), .y(ay), .sub(fa0_first || xi.sub), .trunc,
                     .r(fa0_r), .astat(fa0_a), .stky(fa0_s), .nan_in(fa0_nan), .inf_both(fa0_infb));
-sharc_fadd u_fadd1 (.clk, .en(ce && x_go), .x(ax), .y(ay), .sub(1'b1), .trunc,
-                    .r(fa1_r), .astat(fa1_a), .stky(fa1_s), .nan_in(), .inf_both());
+generate if (ONE_FADD) begin : g_one_fadd
+    always_ff @(posedge clk) if (ce && x_dl && dual_n) begin fa1_r <= fa0_r; fa1_a <= fa0_a; fa1_s <= fa0_s; end
+end else begin : g_two_fadd
+    sharc_fadd u_fadd1 (.clk, .en(ce && x_go), .x(ax), .y(ay), .sub(1'b1), .trunc,
+                        .r(fa1_r), .astat(fa1_a), .stky(fa1_s), .nan_in(), .inf_both());
+end endgenerate
 sharc_fmul u_fmul (.clk, .en(ce && x_go), .restart(ce && (d_go || x_drop)), .valid(xi.fmul), .x(mx), .y(my), .busy(fm_busy),
                    .r(fm_r), .astat(fm_a), .stky(fm_s));
 
@@ -139,8 +150,10 @@ always_ff @(posedge clk) if (ce && x_go)
 
 // the slow unit's operands, loaded as its op enters X and read until the end of its W clock: a
 // second op waits while the first is in X
-logic [31:0] mc_x, mc_y, avg_x, avg_y;
-mc_t         mc_op;
+// preserve: physical synthesis must not retime them, or a retimed register's name escapes the SDC's
+// multicycle on mc_* and avg_* (build 74bb49a: by_OTERM, clk_dsp -0.632 ns timed in one clock)
+(* preserve *) logic [31:0] mc_x, mc_y, avg_x, avg_y;
+(* preserve *) mc_t         mc_op;
 logic        x_mc, w_mc, x_avg, w_avg;
 always_ff @(posedge clk) if (ce && d_go) begin
     if (di.mc) begin mc_x <= d_ax; mc_y <= d_ay; mc_op <= di.mc_op; end
@@ -152,7 +165,8 @@ assign d_mc_wait = (di.mc && x_mc) || (di.avg && x_avg);
 // (the core's timing): a FAVG or slow-path multiply that does not execute holds X too
 logic [1:0] avg_n;
 always_ff @(posedge clk) if (ce) avg_n <= (x_go || !x_avg) ? 2'd0 : (avg_n == 2'd3 ? avg_n : avg_n + 2'd1);
-assign x_busy = fm_busy || (x_avg && avg_n < 2'd2);
+always_ff @(posedge clk) if (ce) dual_n <= !(x_go || x_drop || !x_dl);
+assign x_busy = fm_busy || (x_avg && avg_n < 2'd2) || fa0_first;
 
 // ---------------------------------------------------------------- W
 
@@ -174,14 +188,14 @@ always_ff @(posedge clk) if (ce) begin
         w_mop <= x_comp[21:16];
         w_op <= x_comp[19:12];
         w_mf <= x_comp[22];
-        x_mc <= 1'b0; x_avg <= 1'b0;
+        x_mc <= 1'b0; x_avg <= 1'b0; x_dl <= 1'b0;
         w_mc <= xi.mc; w_avg <= xi.avg;
     end else begin
         w_exec <= 1'b0;
         w_mc <= 1'b0; w_avg <= 1'b0;
     end
-    if (x_drop) begin x_mc <= 1'b0; x_avg <= 1'b0; end
-    if (d_go) begin x_mc <= di.mc; x_avg <= di.avg; end
+    if (x_drop) begin x_mc <= 1'b0; x_avg <= 1'b0; x_dl <= 1'b0; end
+    if (d_go) begin x_mc <= di.mc; x_avg <= di.avg; x_dl <= ONE_FADD && di.dual; end
 end
 
 // the slow unit: sharc_fp_pkg on mc_* (multicycle 2), FAVG on avg_* (multicycle 4)
@@ -210,7 +224,7 @@ always_comb begin
     MC_COMP:     mc_o = f_comp(mc_x, mc_y, 32'h0);          // history byte added in W
     default:     mc_o = fix_o;                              // MC_FIX_MF
     endcase
-    avg_o = f_avg(avg_x, avg_y, w_trunc);
+    avg_o = SUBSET ? '0 : f_avg(avg_x, avg_y, w_trunc);
 end
 
 // FADD_FSUB's two infinite operands: MAME stores the integer pattern converted (compute.hxx:386)

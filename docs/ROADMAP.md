@@ -282,3 +282,119 @@ Voodoo files are to be diffed between the two tags before a divergence is blamed
    "CREDITS 00" from frame 647, where MAME shows it from 683 (its PPC waits on the SHARC in
    between; cause of the 36 frames unverified). The JVS start-up at 222-458 waits 2 s a try, as in
    MAME (`scripts/mame_bootlog.py`).
+
+## Area plan (proposed; no step starts before the user approves it)
+
+Goal: free ALMs for the Voodoo speedups the device cannot hold (16 line-buffer sets, about 395
+ALMs, 513k to 439k busy clocks for 44400's second frame in `board_tb`; the span-start
+multipliers, 108 ALMs and 8 DSP) and for fitter headroom (at 99% the HDMI scaler's clock misses
+at every seed), without adding a clock to the SHARC's hot instructions or to vraster's pixel rate.
+
+Where the 41,568 ALMs are (release `45da077`, seed 9, `KonamiHornet.fit.rpt`):
+
+| Block | ALMs | Note |
+|---|---|---|
+| `sys/` | ~7,100 | fixed: ascal 2,049, audio 874 (ALSA is the sound server's path), two OSDs 988, pll_hdmi_adj 539, hps_io 486 |
+| `sharc2_core` | 16,702 | own 11,914, ALU 4,120, RAMs and MLABs 670; 5 DSP |
+| `vraster` | 6,973 | 67 DSP; written for area, the fill rate is the frame-rate bottleneck |
+| `ppc403_core` | 3,343 | |
+| `hornet_video` | 1,984 | AREA already |
+| `hornet_board` glue | 1,941 | |
+| `hornet_sdram`, `hornet_ddr3`, icache, sndbridge, rtc, loader | 2,642 | 1,008 / 730 / 418 / 214 / 173 / 99 |
+
+What the SHARC's logic is (`rtl/synth_sharc/area_exp.py`, quartus_map of the core alone,
+`area_round4.txt`; base 29,683 ALUTs, own 21,432, ALU 7,657): the XS_STEP path 4,514, the DMA
+engine 2,385, IOP register writes 1,674, op_fuse 1,578, get_ureg 1,128, the loop end 505, the
+fetch-step interrupt 196. DMA_PACK 0 took 506 (shipped).
+
+What the game needs (HARDWARE_NOTES, "Program census"): the hot forms are compute with a DM
+access, ureg moves among R/I/M/L/USTAT/IRPTL/MODE1, sysreg bit ops on those four registers,
+immediate shifts, jumps, calls and returns; 99.3% of the play trace. Never used: type 1 dual
+access, PUSH/POP, FAVG and a dozen other compute ops. Boot only: PM-bus data, PX.
+
+### Steps
+
+Each step: parameterised in the core (the benches keep the full core), `sim/sharc2_regress.sh`
+(windows 195, 216, 3000, 7500, serial and pipelined), `board_tb` frames 2150, 7500, 3900 and
+44400 keep step, `build_staged.py`, hardware. Savings are estimates until step 0 measures them.
+
+0. **Measure.** Knockout variants in `area_exp.py` for each item below; the same harness for
+   vraster, hornet_video and the board glue in `rtl/synth_board`; a trace check that no
+   post-modify ran with L != 0 (the trace has I/M/L per line) before the circular-buffer wrap goes.
+1. **The game's subset of the compute units** (parameter): FAVG (679 ALMs standalone,
+   SHARC_V2), the unused slow ops, shifter ops and multifunction forms, type 1, PUSH/POP.
+   About 800 ALMs.
+2. **Dual FADD/FSUB through one adder**, two passes (312 per 2M instructions, +2 clocks each):
+   the second `sharc_fadd` goes, about 450 ALMs.
+3. **Loop and status stacks in MLAB** with pointers, as the PC stack: 704 flops and their
+   push/pop muxes, about 350 ALMs.
+4. **DMA parameter registers in MLAB**: the 16 IOP registers written one at a time by
+   `iop_write` and read by the engine when a channel starts (1,763 starts a frame, a few clocks
+   each); widths to the chip's (C/EC 16, II 17, CP 18 bits); GP and the host port dropped.
+   400-600 of the engine's 1,200 ALMs.
+5. **Hot and cold universal registers**: `get_ureg`/`op_ureg` hardwired for R, I, M, L, USTAT1,
+   USTAT2, IRPTL and MODE1 (every source above 0.01% of the trace); the rest through step 6.
+   300-500 ALMs.
+6. **A microcoded sequencer for the cold work**, replacing XS_STEP, `x_rq` and `todo`: one 32-bit
+   universal-register read and write path, one stack port, a few primitive ops, the program in one
+   or two M10K (freed from the icache's tags, which belong in MLAB: it holds 6 M10K for 8,704 bits).
+   It runs DO UNTIL, the loop end's pops, a call's push, RTS/RTI, interrupt entry, IOP writes,
+   cold ureg writes (MODE1, IMASK, PCSTK, LCNTR, ...), PM-bus data and PX (boot), IDLE, L and B
+   writes. The hot forms keep their one handler clock. Net 1,000-2,000 ALMs (the step path alone
+   is 4,514 ALUTs); the largest and riskiest step, after 1-5 are built and measured.
+7. **Spend it**: SB 4 (16 sets), the span-start multipliers, and a utilisation that meets the
+   HDMI clock across seeds. The SHARC's clk_dsp slack (+0.453) is re-checked after each step.
+
+Target: at least 2,000 ALMs from steps 1-5, 1,000 more from 6.
+
+### Results
+
+quartus_map of `sharc2_core` alone (`rtl/synth_sharc/area_exp.py`, `area_round5.txt`), combinational
+ALUTs; each step passed the window benches and kept `board_tb`'s four logs identical to `136a2d1`'s
+(window 216 stops at a device divergence at instruction 82,649 in both):
+
+| Step | Commit | ALUTs | Registers | Note |
+|---|---|---|---|---|
+| before | `136a2d1` | 25,830 | 6,590 | |
+| 1 subset | `ba7f7b1` | 22,728 | 6,348 | knockouts: type 1 1,543, FAVG 1,216, multifunction 438, fixed ALU 415, shifter 132 |
+| 2 one adder | `b2dee41` | 22,028 | 6,263 | window 7500: +42 unit-busy clocks, total unchanged |
+| 3 stacks in MLAB | `7d22886` | 21,363 | 5,585 | |
+| 4 DMA registers | not built | | | upper bound 326 ALUTs (registers never written) |
+| 5 cold ureg reads | built, reverted | 21,325 | 5,618 | the mux moved to the holding register's input: 38 ALUTs |
+| 6 microcode | not built | | | the whole XS_STEP path is 1,308 ALUTs now; a sequencer keeps the micro-ops' datapath |
+
+On the current core the DMA engine is 2,139 ALUTs and get_ureg 818. A sequential (microcoded) DMA
+engine would cost the board its word-a-clock Voodoo transfers, which bind in busy frames (44400:
+30,445 idle SHARC clocks a frame).
+
+Step 7: SB 4 (`adc8921`), 44400 frame 2 563k -> 448k Voodoo busy clocks in `board_tb +ddr3`.
+
+Full builds (`build_staged.py`, seed 9), against the release `45da077` (41,568 ALMs; SHARC 16,702):
+
+| Commit | ALMs | SHARC | vraster | clk_sys | clk_dsp | HDMI |
+|---|---|---|---|---|---|---|
+| `b2dee41` (steps 1, 2) | 39,163 | 14,946 | 7,025 | +1.172 | +0.132 | -0.152 |
+| `9abfd5f` (1-3, SB 4) | 39,251 | 14,622 | 7,499 | +0.278 | +0.964 | -0.304 |
+
+`9abfd5f` is on the board as `KonamiHornet_30000040.rbf`. Attract, a native screenshot a second
+with the slowdown indicator on (`scripts/hw_slowdown.py`, `debug/hw/slow40/long40` and `long39`):
+the lava demo (the scene of snapshot 44400, a fixed number of game frames) takes 28 s against
+`30000039`'s 32 s, with the indicator on for 20 of those seconds against all 32; the attract's other
+indicator events (fades and GAME OVER cards, where the game itself swaps slowly) fall at the same
+seconds on both builds. At `74bb49a` (the same RTL
+before the slow unit's sources were preserved) clk_dsp failed by 0.632 ns (LESSONS_LEARNED: retiming).
+
+### Not in the plan, and why
+
+- **vraster**: the pixel pipeline is a pixel a clock and already shares one setup multiplier and a
+  sequential edge divider; the triangle gradients come from the SHARC's program, so HyperNG64's
+  setup-in-microcode has no counterpart here. Knockouts in step 0 may find a few hundred ALMs in
+  the command processor; nothing touches the pixel path.
+- **PPC**: a sequencer for lmw/stmw, strings, dcbz and exceptions is possible (300-600 ALMs,
+  unmeasured); after the SHARC, if still needed.
+- **hornet_video, glue, SDRAM, DDR3**: step 0's knockouts first; only an avoidable item above
+  about 300 ALMs is worth a change (candidates: the CLUT table rebuild, the port A read mux, the
+  cheat engine).
+- **sys/**: YC, adaptive scanlines and the downscale filter are already off; ALSA stays.
+- Translating the SHARC program itself into microcode for a smaller engine: the program is the
+  game's, loaded and checked by the PPC; not considered.

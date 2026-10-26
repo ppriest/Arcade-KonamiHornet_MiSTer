@@ -32,7 +32,10 @@ module sharc2_core #(
                                         // gradius4's use: docs/HACKS.md)
     parameter bit BENCH = 0,            // X reads its R operands again in serial mode (bench pokes)
     parameter bit DMA_LOCK = 1,         // an instruction's end waits for the last DMA quantum
-    parameter bit DMA_PACK = 1          // DMA packing (PMODE); 0: none (DTYPE's 48-bit words stay)
+    parameter bit DMA_PACK = 1,         // DMA packing (PMODE); 0: none (DTYPE's 48-bit words stay)
+    parameter bit SUBSET = 0,           // gradius4's subset: no type 1 (dual access) and the compute
+                                        // operations of sharc2_pkg comp_unsup left out; `unsup` flags one
+    parameter bit ONE_FADD = 0          // one float adder: a dual FADD/FSUB takes a clock more in X
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -61,6 +64,7 @@ module sharc2_core #(
     input  logic [5:0]  dbg_sel,
     output logic [31:0] dbg_val,
     output logic        dbg_idle,
+    output logic        unsup,          // SUBSET: an instruction outside it executed (sticky until reset)
     input  logic        dbg_pm_we,
     input  logic [14:0] dbg_pm_addr,
     input  logic [47:0] dbg_pm_wdata,
@@ -91,16 +95,14 @@ typedef struct packed {
     logic [1:0]  loop_type;
 } laddr_t;
 
-// the sequencer's registers (MAME's sharc_internal_state without R, the DAGs, the PC stack array
-// and the DMA transfer state)
+// the sequencer's registers (MAME's sharc_internal_state without R, the DAGs, the PC, loop and
+// status stack arrays and the DMA transfer state)
 typedef struct packed {
     logic [31:0] pc, daddr, faddr, nfaddr, delay_slot1, delay_slot2;
     logic [31:0] pcstk, pcstkp;
     logic [31:0] curlcntr, lcntr, lstkp;
     laddr_t      laddr;
-    logic [5:0][31:0] lcstack, lastack;
     logic [31:0] status_stkp;
-    logic [4:0][31:0] ss_mode1, ss_astat;
     logic [31:0] astat, astat_old, astat_old_old, astat_old_old_old;
     logic [31:0] mode1, mode2, stky, irptl, imask, imaskp, ustat1, ustat2;
     logic [47:0] px;
@@ -153,6 +155,8 @@ typedef struct packed {
     logic        dwe;  logic dg; logic [1:0] dk; logic [2:0] di; logic [31:0] dd;   // DAG by set_ureg
     logic [1:0]  pwe;  logic [1:0][2:0] pi; logic [1:0][31:0] pd;  // post-modify, DAG1 / DAG2
     logic        psw;  logic [4:0] psi; logic [31:0] psd;          // PC stack array
+    logic        lcw, law, ssw;                                    // loop stacks at LSTKP - 1, status
+    logic [31:0] lcd, lad, ssm, ssa;                               // stack at STATUS_STKP (u_lc, u_la, u_ss*)
     logic [1:0]  lwe;  logic [1:0][3:0] lr; logic [1:0][31:0] ld;     // R loads (slow path, to W)
     acc_t [1:0]  a;
     logic [1:0]  n;
@@ -201,6 +205,7 @@ generate for (ga = 0; ga < 8; ga++) begin : g_dag
     end
 end endgenerate
 logic [31:0] pcs_rd;               // the PC stack array's read port (sharc2_lutram, below)
+logic [31:0] lc_rd, la_rd, ssm_rd, ssa_rd;     // the loop and status stack arrays' (below)
 logic [63:0] mrf, mrb;
 
 // DMA transfer state (sharcdma.hxx dma_op), the engine's
@@ -474,7 +479,7 @@ function automatic dec_t d_decode(input logic [47:0] op);
     default: ;
     endcase
     if (o.comp_on) begin
-        ci = comp_info(comp);
+        ci = comp_info(comp, SUBSET);
         o.rd |= ci.rd;
         if (ci.needs_astat) o.needs_astat = 1'b1;
     end
@@ -601,7 +606,7 @@ logic [31:0] d_dI [2], d_dM [2], d_dL [2], d_dB [2], d_imm [2], d_pd [2];
 logic [31:0] x_dI [2], x_dM [2], x_sM [2], x_sX [2], x_pd [2];   // x_pd: I post-modified
 logic        d_aok, x_aok;         // the form's accesses, if it makes them, all run as fast ones
 assign d_dec = d_decode(pm_q);
-assign d_ci = d_dec.comp_on ? comp_info(pm_q[22:0]) : '0;
+assign d_ci = d_dec.comp_on ? comp_info(pm_q[22:0], SUBSET) : '0;
 // synthesis translate_off
 always_ff @(posedge clk)
     if (ce && late_hit(pm_q, x_late) != ((d_dec.rd & x_late) != 0))
@@ -775,7 +780,7 @@ assign alu_shimm = x_dec.shimm;          // the form (decode); the condition gat
 assign alu_mode1 = (x_hclk || xph == XS_EXEC) ? c.c_mode1 : x_c_mode1;
 assign alu_astat = (x_hclk || xph == XS_EXEC) ? c.c_astat : x_c_astat;
 
-sharc2_alu u_alu (
+sharc2_alu #(.SUBSET(SUBSET), .ONE_FADD(ONE_FADD)) u_alu (
     .clk, .ce,
     .d_go, .d_comp_on(d_dec.comp_on), .d_comp(pm_q[22:0]),
     .d_ax(fwd_e(d_dec.i_ax)), .d_ay(fwd_e(d_dec.i_ay)), .d_mc_wait,
@@ -1184,6 +1189,17 @@ always_ff @(posedge clk)
         $error("X: %06X ends with micro-ops %04X left", x_pc[23:0], todo_n);
 assign x_exec_now = x_first && x_seq;
 
+// SUBSET: an instruction outside it executes (HARDWARE_NOTES "Program census": none in the program)
+logic x_unsup;
+assign x_unsup = x_op[47:45] == 3'b001 || (x_dec.comp_on && !x_dec.shimm && comp_unsup(x_op[22:0])) ||
+                 (x_dec.shimm && shift_unsup(x_op[21:16]));
+always_ff @(posedge clk)
+    if (reset) unsup <= 1'b0;
+    else if (SUBSET && ce && x_exec_now && x_unsup) begin
+        unsup <= 1'b1;
+        if (BENCH) $error("SHARC: %06X %012X is outside the subset (SUBSET)", x_pc[23:0], x_op);
+    end
+
 // the DAG arrays' write port: a bench load (dbg_wsel 2-17: I M L B of DAG1, of DAG2, then the
 // alternates), or X's post-modifies and universal-register write (B writes I too)
 always_comb begin
@@ -1237,6 +1253,40 @@ always_comb begin
                                                                           : 5'(Q.pcstkp - 32'd2);
 end
 sharc2_lutram #(.AW(5), .DW(32)) u_pcs (.clk, .we(pcs_we), .wa(pcs_wa), .wd(pcs_wd), .ra(pcs_ra), .rd(pcs_rd));
+
+// the loop stacks (LCNTR, LADDR) and the status stack (MODE1, ASTAT) in MLAB: one write port each
+// (X at LSTKP - 1 or STATUS_STKP, or a bench load), one read port: a loop push reads LSTKP + 1 and
+// LSTKP (it runs in an XS_STEP clock of its own), a pop LSTKP - 2, the boot entry 0; a status pop
+// STATUS_STKP - 1
+logic        st_go;
+logic [2:0]  lc_ra, la_ra, ls_wa, ss_wa;
+logic        lc_we, la_we, ss_we;
+logic [31:0] lc_wd, la_wd, ssm_wd, ssa_wd;
+assign st_go = !reset && ce && run && !booting && (x_commit || x_fs_commit);
+always_comb begin
+    logic push;
+    push = xph == XS_STEP && x_k0 == 4'(OP_PUSH_LOOP);
+    lc_ra = boot_done ? 3'd0 : push ? 3'(Q.lstkp + 32'd1) : 3'(Q.lstkp - 32'd2);
+    la_ra = push ? 3'(Q.lstkp) : 3'(Q.lstkp - 32'd2);
+    ls_wa = 3'(Q.lstkp - 32'd1);
+    ss_wa = 3'(Q.status_stkp);
+    lc_we = st_go && c.lcw; lc_wd = c.lcd;
+    la_we = st_go && c.law; la_wd = c.lad;
+    ss_we = st_go && c.ssw; ssm_wd = c.ssm; ssa_wd = c.ssa;
+    if (dbg_we && (dbg_wsel == 8'd30 || dbg_wsel == 8'd31 || dbg_wsel == 8'd36 || dbg_wsel == 8'd37)) begin
+        lc_we = dbg_wsel == 8'd30; la_we = dbg_wsel == 8'd31;
+        ls_wa = dbg_widx[2:0]; ss_wa = dbg_widx[2:0];
+        lc_wd = dbg_wdata[31:0]; la_wd = dbg_wdata[31:0]; ssm_wd = dbg_wdata[31:0]; ssa_wd = dbg_wdata[31:0];
+        ss_we = 1'b0;
+    end
+end
+logic ssm_we, ssa_we;
+assign ssm_we = ss_we || (dbg_we && dbg_wsel == 8'd36);
+assign ssa_we = ss_we || (dbg_we && dbg_wsel == 8'd37);
+sharc2_lutram #(.AW(3), .DW(32)) u_lc (.clk, .we(lc_we), .wa(ls_wa), .wd(lc_wd), .ra(lc_ra), .rd(lc_rd));
+sharc2_lutram #(.AW(3), .DW(32)) u_la (.clk, .we(la_we), .wa(ls_wa), .wd(la_wd), .ra(la_ra), .rd(la_rd));
+sharc2_lutram #(.AW(3), .DW(32)) u_ssm (.clk, .we(ssm_we), .wa(ss_wa), .wd(ssm_wd), .ra(3'(Q.status_stkp - 32'd1)), .rd(ssm_rd));
+sharc2_lutram #(.AW(3), .DW(32)) u_ssa (.clk, .we(ssa_we), .wa(ss_wa), .wd(ssa_wd), .ra(3'(Q.status_stkp - 32'd1)), .rd(ssa_rd));
 
 // ------------------------------------------------------------------------------------------
 // F and D control
@@ -1586,7 +1636,7 @@ always_ff @(posedge clk) begin
             x_aok <= d_aok;
             x_late <= d_ci.late | (d_dec.ld & ~(ld_go ? bit16(el_r) : 16'h0));
             x_late_ld <= d_dec.ld & ~d_ci.late & ~(ld_go ? bit16(el_r) : 16'h0);
-            x_dmw <= dm_write_form(pm_q); x_pb <= pm_q[47:45] == 3'b001;
+            x_dmw <= dm_write_form(pm_q); x_pb <= !SUBSET && pm_q[47:45] == 3'b001;
             x_el <= ld_go; x_el_r <= el_r;
         end
 
@@ -1909,7 +1959,7 @@ task automatic boot_apply();
     Q.pcstkp <= 32'h0; Q.lstkp <= 32'h0;
     Q.pcstk <= 32'h00FF_FFFF;
     Q.curlcntr <= 32'hFFFF_FFFF;
-    Q.lcntr <= Q.lcstack[0];
+    Q.lcntr <= lc_rd;                                  // lcstack[0] (lc_ra at boot_done)
     Q.laddr <= laddr_unpack(32'hFFFF_FFFF);
     Q.status_stkp <= 32'h0;
     Q.interrupt_active <= 1'b0;
@@ -1963,14 +2013,11 @@ task automatic dbg_write(input logic [7:0] sel, input logic [5:0] idx, input log
     8'd26: Q.delay_slot2 <= d[31:0];
     8'd27: Q.pcstk <= d[31:0];
     8'd28: Q.pcstkp <= d[31:0];
-    8'd30: Q.lcstack[idx[2:0]] <= d[31:0];
-    8'd31: Q.lastack[idx[2:0]] <= d[31:0];
+    // 30, 31 (loop stacks), 36, 37 (status stack): their arrays' write ports
     8'd32: Q.curlcntr <= d[31:0];
     8'd33: Q.lcntr <= d[31:0];
     8'd34: Q.lstkp <= d[31:0];
     8'd35: Q.laddr <= laddr_unpack(d[31:0]);
-    8'd36: Q.ss_mode1[idx[2:0]] <= d[31:0];
-    8'd37: Q.ss_astat[idx[2:0]] <= d[31:0];
     8'd38: Q.status_stkp <= d[31:0];
     8'd39: Q.astat <= d[31:0];
     8'd40: Q.astat_old <= d[31:0];

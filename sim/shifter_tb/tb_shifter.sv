@@ -22,7 +22,7 @@ initial begin
         default: sv = {$urandom % 2 ? 24'hFFFFFF : 24'h0, 8'($urandom)};
         endcase
         if ($urandom % 8 == 0) x = 32'h8000_0000 >> ($urandom % 32);
-        a = shifter(sop, sv, imm, 4'd3, x, rnv);
+        a = shifter(sop, sv, imm, 4'd3, x, rnv, 1'b0);
         b = shifter_ref(sop, sv, imm, 4'd3, x, rnv);
         if (a != b) begin
             if (bad < 10) $display("op %02X sval %08X imm %0d x %08X rn %08X: %08X %08X / ref %08X %08X",

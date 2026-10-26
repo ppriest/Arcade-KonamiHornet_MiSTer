@@ -270,6 +270,8 @@ struct Ddr {
 
 // ------------------------------------------------------------------------------------------
 
+static bool unsup_seen = false;    // ev_dsp_unsup reported once
+
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
     const char *s;
@@ -992,6 +994,10 @@ int main(int argc, char **argv) {
         }
         if (t->ev_v_wait) v_wait++;
         if (t->ev_dsp_idle) d_idle++;
+        if (t->ev_dsp_unsup && !unsup_seen) {
+            fprintf(stderr, "frame %d line %d: the SHARC ran an instruction outside its subset\n", frame + 1, (int)t->vpos);
+            unsup_seen = true;
+        }
         // port B's line reads for the SHARC (clk_sys): clocks a line's request waits, words taken,
         // lines, clocks a SHARC request waits in the crossing queue
         {

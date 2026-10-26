@@ -64,7 +64,32 @@ function automatic logic [15:0] bit16(input logic [3:0] r);
     bit16 = 16'h1 << r;
 endfunction
 
-function automatic cinfo_t comp_info(input logic [22:0] c);
+// The game's subset (sharc2_core SUBSET; HARDWARE_NOTES "Program census"): compute and shift
+// operations gradius4's program never holds. With `lite` the functions below leave them out, and
+// the core flags one that executes (sharc2_core `unsup`)
+function automatic logic fix_unsup(input logic [7:0] op);   // fixed ALU: the +CI forms, ABS, NOT, MIN, CLIP
+    fix_unsup = op == 8'h05 || op == 8'h06 || op == 8'h25 || op == 8'h26 || op == 8'h30 ||
+                op == 8'h43 || op == 8'h61 || op == 8'h63;
+endfunction
+function automatic logic shift_unsup(input logic [5:0] sop);  // ASHIFT, FDEP, FDEP (SE); OR FDEP stays (the boot loader's)
+    shift_unsup = sop == 6'h01 || sop == 6'h11 || sop == 6'h13;
+endfunction
+function automatic logic comp_unsup(input logic [22:0] c);
+    logic [7:0] op;
+    logic [5:0] mop;
+    op = c[19:12]; mop = c[21:16];
+    if (c == 0) comp_unsup = 1'b0;
+    else if (!c[22])
+        case (c[21:20])
+        2'd0: comp_unsup = fix_unsup(op) || op == 8'h89;                  // ... and FAVG
+        2'd2: comp_unsup = shift_unsup(op[7:2]);
+        default: comp_unsup = 1'b0;
+        endcase
+    else comp_unsup = mop == 6'h00 || mop == 6'h04 || mop == 6'h05 ||   // MR -> R, MUL SSFR || ADD/SUB
+                      mop == 6'h1c || mop == 6'h1d;                     // FMUL || FAVG, FMUL || FABS
+endfunction
+
+function automatic cinfo_t comp_info(input logic [22:0] c, input logic lite);
     cinfo_t o;
     logic [7:0] op;
     logic [1:0] cu;
@@ -74,7 +99,7 @@ function automatic cinfo_t comp_info(input logic [22:0] c);
     o.mc_op = MC_PASS;
     op = c[19:12]; cu = c[21:20]; rn = c[11:8]; rx = c[7:4]; ry = c[3:0];
     mop = c[21:16];
-    if (c == 0) return o;
+    if (c == 0 || (lite && comp_unsup(c))) return o;
     if (!c[22]) begin
         o.rd = bit16(rx) | bit16(ry);
         case (cu)
@@ -182,12 +207,15 @@ function automatic logic [31:0] saturate(input logic [31:0] r);
     saturate = {32{r[31]}} ^ 32'h8000_0000;
 endfunction
 
-function automatic xres_t alu_fixed(input logic [7:0] op, input logic [3:0] rn, input logic [31:0] x,
-                                    input logic [31:0] y, input logic [31:0] astat, input logic sat);
+function automatic xres_t alu_fixed(input logic [7:0] op_in, input logic [3:0] rn, input logic [31:0] x,
+                                    input logic [31:0] y, input logic [31:0] astat, input logic sat,
+                                    input logic lite);
     xres_t o;
     logic [31:0] r, c, a;
+    logic [7:0] op;
     logic set_r;
     o = '0;
+    op = op_in;
     r = 32'h0;
     a = 32'h0;
     c = (astat & AC) ? 32'd1 : 32'd0;
@@ -199,8 +227,8 @@ function automatic xres_t alu_fixed(input logic [7:0] op, input logic [3:0] rn, 
     8'h01, 8'h05, 8'h25, 8'h29: begin
         logic [31:0] yy;
         logic [32:0] s33;
-        yy = (op == 8'h29) ? 32'd1 : (op == 8'h25) ? 32'd0 : y;
-        s33 = {1'b0, x} + {1'b0, yy} + {32'h0, (op == 8'h05 || op == 8'h25) && c[0]};
+        yy = (op == 8'h29) ? 32'd1 : (!lite && op == 8'h25) ? 32'd0 : y;
+        s33 = {1'b0, x} + {1'b0, yy} + {32'h0, !lite && (op == 8'h05 || op == 8'h25) && c[0]};
         r = s33[31:0];
         if (~(x ^ yy) & (x ^ r) & 32'h8000_0000) begin a |= AV; o.sset |= AOS; end
         if (s33[32]) a |= AC;
@@ -209,8 +237,8 @@ function automatic xres_t alu_fixed(input logic [7:0] op, input logic [3:0] rn, 
     8'h02, 8'h06, 8'h26, 8'h2a: begin
         logic [31:0] yy;
         logic [32:0] s33;
-        yy = (op == 8'h2a) ? 32'd1 : (op == 8'h26) ? 32'd0 : y;
-        s33 = {1'b0, x} + {1'b0, ~yy} + {32'h0, (op == 8'h06 || op == 8'h26) ? c[0] : 1'b1};
+        yy = (op == 8'h2a) ? 32'd1 : (!lite && op == 8'h26) ? 32'd0 : y;
+        s33 = {1'b0, x} + {1'b0, ~yy} + {32'h0, (!lite && (op == 8'h06 || op == 8'h26)) ? c[0] : 1'b1};
         r = s33[31:0];
         if ((x ^ yy) & (x ^ r) & 32'h8000_0000) begin a |= AV; o.sset |= AOS; end
         if (s33[32]) a |= AC;
@@ -233,7 +261,7 @@ function automatic xres_t alu_fixed(input logic [7:0] op, input logic [3:0] rn, 
         if (r <= 32'h0) a |= AC;
         if (sat && (a & AV)) r = saturate(r);
     end
-    8'h30: begin
+    8'h30: if (lite) set_r = 1'b0; else begin
         r = x[31] ? -x : x;
         if (r[31]) begin a |= AV; o.sset |= AOS; if (sat) r = 32'h7FFF_FFFF; end
         if (x[31]) a |= AS;
@@ -241,10 +269,10 @@ function automatic xres_t alu_fixed(input logic [7:0] op, input logic [3:0] rn, 
     8'h40: r = x & y;
     8'h41: r = x | y;
     8'h42: r = x ^ y;
-    8'h43: r = ~x;
-    8'h61: r = ($signed(x) < $signed(y)) ? x : y;
+    8'h43: if (lite) set_r = 1'b0; else r = ~x;
+    8'h61: if (lite) set_r = 1'b0; else r = ($signed(x) < $signed(y)) ? x : y;
     8'h62: r = ($signed(x) < $signed(y)) ? y : x;
-    8'h63: begin
+    8'h63: if (lite) set_r = 1'b0; else begin
         logic [31:0] ay;
         ay = y[31] ? -y : y;
         r = ($signed(x) < -$signed(ay)) ? -ay : ($signed(ay) < $signed(x)) ? ay : x;
@@ -314,9 +342,11 @@ endfunction
 // The shifter: every form as one left rotate (by k) of x, the bits kept (m), the bits filled with
 // a sign bit (f, sg) and Rn ORed in; the masks and the sign bit are worked out beside the rotate.
 // shifter_ref is MAME's form for form (compute.hxx), kept for sim/shifter_tb
-function automatic xres_t shifter(input logic [5:0] sop, input logic [31:0] sval, input logic imm,
-                                  input logic [3:0] rn, input logic [31:0] x, input logic [31:0] rnv);
+function automatic xres_t shifter(input logic [5:0] sop_in, input logic [31:0] sval, input logic imm,
+                                  input logic [3:0] rn, input logic [31:0] x, input logic [31:0] rnv,
+                                  input logic lite);
     xres_t o;
+    logic [5:0]  sop;
     logic [31:0] r, a, rot, m, f, ones_r, mk, rs;
     logic signed [7:0] sh8;
     logic signed [31:0] sh, shx;
@@ -324,6 +354,7 @@ function automatic xres_t shifter(input logic [5:0] sop, input logic [31:0] sval
     logic [4:0]  k;
     logic        sg, wr, orn, zpre;
     o = '0;
+    sop = sop_in;
     a = 32'h0;
     wr = 1'b1;
     sh8 = sval[7:0];
@@ -350,7 +381,7 @@ function automatic xres_t shifter(input logic [5:0] sop, input logic [31:0] sval
         orn = sop == 6'h08;
         zpre = sop == 6'h08 && imm;              // OR LSHIFT by an immediate: SZ before the OR
     end
-    6'h01: begin
+    6'h01: if (!lite) begin
         if (sh < 0) begin
             n = (sh > -32) ? 6'(-sh) : 6'd31;
             k = 5'(6'd32 - n);
@@ -378,11 +409,11 @@ function automatic xres_t shifter(input logic [5:0] sop, input logic [31:0] sval
                     if (l < 6'd32) begin f = ~mk; sg = x[5'(bitn + l - 6'd1)]; end
                 end
             end
-            6'h13: begin
+            6'h13: if (!lite) begin
                 k = bitn[4:0]; m = mk << bitn;
                 if (l < 6'd32) begin f = ~mk << bitn; sg = x[5'(l - 6'd1)]; end
             end
-            default: begin k = bitn[4:0]; m = mk << bitn; end      // 11, 19
+            default: if (!lite || sop == 6'h19) begin k = bitn[4:0]; m = mk << bitn; end      // 11, 19
             endcase
         end
         orn = sop == 6'h19;

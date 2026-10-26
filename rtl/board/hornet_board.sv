@@ -183,6 +183,7 @@ module hornet_board #(
     output logic        ev_dsp_reset,      // the PPC released the SHARC's RESET: it boots
     output logic        ev_swapcmd,        // swapbufferCMD written to the Voodoo
     output logic        ev_dsp_idle,       // the SHARC is idle
+    output logic        ev_dsp_unsup,      // the SHARC ran an instruction outside its subset (sticky, clk_dsp)
     output logic        ev_dev,            // a PPC device access answered this clock
     output logic [31:0] ev_dev_addr,
     output logic [31:0] ev_dev_data,
@@ -623,14 +624,14 @@ hornet_pulse u_sboot (.clk_a(clk), .a(ev_dsp_reset), .clk_b(clk_dsp), .b(dsp_boo
 hornet_pulse u_sirq0 (.clk_a(clk), .a(dsp_irq_assert[0]), .clk_b(clk_dsp), .b(dsp_irq[0]));
 hornet_pulse u_sirq1 (.clk_a(clk), .a(dsp_irq_assert[1]), .clk_b(clk_dsp), .b(dsp_irq[1]));
 
-sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0)) dsp (  // docs/HACKS.md
+sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0), .SUBSET(1), .ONE_FADD(1)) dsp (  // docs/HACKS.md
     .clk(clk_dsp), .reset(dsp_reset), .ce(dsp_ce), .boot(dsp_boot), .serial(1'b0),
     .ext_req(dx_req), .ext_we(dx_we), .ext_addr(dx_addr), .ext_wdata(dx_wdata),
     .ext_ack(dx_ack), .ext_rdata(dx_rdata), .ext_post(dx_post),
     .irq_in(3'b0), .irq_assert({1'b0, dsp_irq}), .irq_check_en(1'b1), .dbg_irq_set(32'h0),
     .dbg_iop_ovr(1'b0), .dbg_iop_val(32'h0),
     .dbg_exec(dsp_dbg_exec), .dbg_pc(dsp_dbg_pc), .dbg_op(dsp_dbg_op), .dbg_sel(dsp_dbg_sel),
-    .dbg_val(dsp_dbg_val), .dbg_idle(ev_dsp_idle),
+    .dbg_val(dsp_dbg_val), .dbg_idle(ev_dsp_idle), .unsup(ev_dsp_unsup),
     .dbg_pm_we(dsp_dbg_pm_we), .dbg_pm_addr(dsp_dbg_pm_addr), .dbg_pm_wdata(dsp_dbg_pm_wdata),
     .dbg_dm_we(dsp_dbg_dm_we), .dbg_dm_addr(dsp_dbg_dm_addr), .dbg_dm_wdata(dsp_dbg_dm_wdata),
     .dbg_we(dsp_dbg_we), .dbg_wsel(dsp_dbg_wsel), .dbg_widx(dsp_dbg_widx), .dbg_wdata(dsp_dbg_wdata)

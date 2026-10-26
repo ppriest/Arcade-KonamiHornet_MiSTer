@@ -1,0 +1,25 @@
+# knockouts of sharc2_core at 136a2d1 (area_exp.py; quartus_map, combinational ALUTs)
+base         core ALUTs 25830 (own 18051)  alu 7410  regs 6590
+no_dmae      core ALUTs 23483 (own 15707)  alu 7407  regs 5429
+no_getureg   core ALUTs 25120 (own 17342)  alu 7409  regs 6590
+narrow       core ALUTs 25806 (own 18025)  alu 7409  regs 6526
+no_step      core ALUTs 24377 (own 16633)  alu 7375  regs 5578
+k_favg       core ALUTs 24614 (own 17799)  alu 6444  regs 6526
+k_mcops      core ALUTs 25879 (own 18204)  alu 7303  regs 6590
+k_alufix     core ALUTs 25415 (own 18040)  alu 7006  regs 6590
+k_shift      core ALUTs 25698 (own 18053)  alu 7276  regs 6590
+k_pushpop    core ALUTs 25807 (own 18026)  alu 7412  regs 6589
+k_mf         core ALUTs 25392 (own 18028)  alu 6995  regs 6390
+k_type1      core ALUTs 24287 (own 16555)  alu 7364  regs 6413
+k_fadd1      core ALUTs 24933 (own 17877)  alu 6687  regs 6467
+k_step1      core ALUTs 22400 (own 16591)  alu 5441  regs 6148
+no_fuse      core ALUTs 25817 (own 18024)  alu 7423  regs 6554
+k_ureg_hot   core ALUTs 25536 (own 17897)  alu 7270  regs 6343
+# SUBSET 1 as built (step 1)
+subset       core ALUTs 22728 (own 16917)  alu 5443  regs 6348
+one_fadd     core ALUTs 22028 (own 16610)  alu 5050  regs 6263
+stacks_mlab  core ALUTs 21363 (own 16035)  alu 4960  regs 5585
+cold_ureg    core ALUTs 21325 (own 15993)  alu 4964  regs 5618   (step 5 as built: not kept)
+no_step      core ALUTs 20055 (own 14681)  alu 5006  regs 5251
+no_dmae      core ALUTs 19224 (own 13885)  alu 4968  regs 4424
+no_getureg   core ALUTs 20545 (own 15243)  alu 4934  regs 5585

@@ -971,6 +971,16 @@ and spending one more cycle in the access state machine closed it (+0.011 ns); t
 six clocks, so the cycle is free. A peripheral hanging combinationally off the CPU bus is
 structural; a multicycle over it is a promise the design does not make.
 
+### [KonamiHornet] Register retiming can rename a multicycle source out of its constraint
+
+With `PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON`, the fitter moved the SHARC slow unit's `mc_op`
+register past its decode into `by_OTERM11997`. The SDC's multicycle matches `*u_alu|mc_op*`, so every
+path from the new register was timed in one clock: clk_dsp -0.632 ns at a seed that met before the
+change beside it. A qsf `set_instance_assignment PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF` on the
+instance was silently ignored by Quartus 17.0 (not in Ignored Assignments, the build identical).
+`(* preserve *)` on the multicycle's source registers worked: +0.964 ns. When a multicycle fails,
+check whether its source names in the worst paths still match the SDC's patterns.
+
 ## CPU cores (TG68K.C, T80, vendored CPUs)
 
 ### Budget for the 68k core to be the Fmax-limiting block

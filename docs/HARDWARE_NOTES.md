@@ -140,6 +140,30 @@ instructions at frames 2150 (demo) and 7500 (play).
   1.24 M instructions.
 - Idle: 73-78% of PC samples at the IDLE instruction in attract and play windows.
 
+### Program census (`scripts/sharc_census.py`)
+
+The program is 17,763 non-zero words of block 0 (0x20000-0x245FF), the same image in the 3000
+and 7500 windows. It is written only during boot (`scripts/mame_sharc_pm_versions.py`: the boot
+loader's 753 words by frame 200, the program by 300, then unchanged through 30,000 frames of attract
+and 60,000 of play, `debug/gradius4-pmversions-*`). Static (every word) and dynamic (the 7500 trace, 2,042,911 instructions; the
+boot windows 195 and 216 where they differ):
+
+- **Never in the program** (nor in the boot loader, which adds one OR FDEP): type 1 (compute + dual DM/PM move), PUSH/POP, bit reverse, FAVG,
+  FCLIP, COPYSIGN, fixed CLIP, ABS, the +CI forms, FSUBABS, ASHIFT, FDEP, EXP, LEFTZ/LEFTO,
+  FPACK/FUNPACK, MUL SSFR || ADD/SUB, FMUL || FABS, MR -> reg. Conditions: 11 of 32 (always, EQ,
+  NE, LT, GE, LE, NOT LE, SZ, NOT SZ, NOT BTF, FLAG0).
+- **Play (7500):** compute + DM load 26.4%, compute + DM store 10.7%, compute + ureg move 10.1%,
+  sysreg bit op 8.5%, relative jump 8.3%, compute 7.1%, immediate shift + DM move 5.8%,
+  compute + ureg post-modify 3.7%, immediate shift 3.0%, indirect jump 2.8%, DM <-> ureg direct
+  and indirect 8.0%, imm -> ureg 1.8%, RTS 0.7%, calls 0.65%, NOP 0.55%. Together under 0.05%:
+  DO UNTIL, pre-modify, MODIFY, RTI, IDLE.
+- **Rare but present:** dual FADD/FSUB 312 per 2M instructions; PM-bus data accesses and PX1/PX2
+  writes only in the boot windows (195: 69 reads and 69 writes; 216: 20,480 PX1/PX2 writes, the
+  program copy); L and B written by two words each (init), L read as a source 0.7%.
+- **Universal registers read** (7500): R 24%, IRPTL 6.1% (polled), I 3.1%, USTAT1 2.0%, USTAT2
+  1.0%, L 0.7%, M 0.6%, MODE1 0.5%, ASTAT 60 instructions; written: R, I, M, USTAT2, L, PX,
+  MODE1 (2 words), LCNTR read by 4 words. Sysreg bit ops touch MODE1, USTAT1, USTAT2 and IRPTL only.
+
 ## Open RTL
 
 | Chip | Existing HDL |

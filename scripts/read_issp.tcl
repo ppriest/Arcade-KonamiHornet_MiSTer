@@ -56,6 +56,7 @@ set fields_H {
     {v_displayed    268 269 dec}
     {v_base0        270 295 hex}
     {frame          296 303 dec}
+    {dsp_unsup      304 304 dec}
 }
 # probe V: the Voodoo, the last whole frame (vraster's io_dbg live at 164-179)
 set fields_V {

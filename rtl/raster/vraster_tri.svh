@@ -455,9 +455,9 @@ end
 // ports, a clock at a time: on port A q18's pixel goes first and the reader's beat for that RAM
 // waits in hornet_ddr3 (readReady); on port B q16's read goes first and the writer reads again.
 typedef enum logic [2:0] { S_FREE, S_READ, S_READY, S_PROC, S_DONE, S_WRITE } sstate_t;
-// set index bits: 4 (16 sets) took the lava's (44400) second frame from 513k to 439k busy clocks in
-// board_tb, for about 395 ALMs more (rtl/synth_board estimate), which the device does not have
-localparam int SB = 3;
+// set index bits: 4 (16 sets) takes the lava's (44400) second frame from 563k to 448k Voodoo busy
+// clocks in board_tb +ddr3 (2150: 1% fewer), for about 395 ALMs more than 3 (rtl/synth_board estimate)
+localparam int SB = 4;
 localparam int NSET = 1 << SB;
 localparam int EB = 9 - SB;                            // a set's entry bits
 localparam int SBEATS = 1 << EB;
