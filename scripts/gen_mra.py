@@ -61,7 +61,6 @@ SETS = {
 }
 ALT_DIR = {"gradius4": "_Gradius IV"}       # a parent's clones' folder under releases/_alternatives
 DEV = {"nbapbp"}                         # sets that do not run yet: releases/_dev
-NV_AT = 0x1C00000                        # the M48T58 in the image
 # the settings each set's first boot writes over its NVRAM image (scripts/mame_nvram_setup.py)
 SETUP = json.loads((REPO / "scripts" / "m48t58_setup.json").read_text())
 
@@ -166,14 +165,20 @@ def write(setname, s, romdir, mamever, mame_dir):
     smp_mb = sum(z.size(f) for f in s["snd_smp"]) // MB
     nv = z.read(s["nv"])
     setup = SETUP["sets"].get(setname)
-    patch = ""
     if setup:
         at, data = int(SETUP["at"], 0), bytes.fromhex(setup)
         nv = nv[:at] + data + nv[at + len(data):]
-        rows = "".join(f"\n            {data[i:i + 16].hex(' ')}" for i in range(0, len(data), 16))
-        patch = ("        <!-- ... with the settings its first boot writes (scripts/mame_nvram_setup.py): no RTC\n"
-                 "             checksum error or clock screens. A saved .nvm replaces it -->\n"
-                 f'        <patch offset="0x{NV_AT + at:X}">{rows}\n        </patch>\n')
+    # inline, not a part: MAME's images (0.250 on) are a 16-byte header and zeros, and a zip without
+    # the file left the sound program where the M48T58 goes (Main_MiSTer drops a missing part), whose
+    # header check then ends in HARDWARE ERROR (0)
+    used = (len(nv.rstrip(b"\0")) + 15) & ~15
+    rows = "".join(f"\n            {nv[i:i + 16].hex(' ')}" for i in range(0, used, 16))
+    nv_note = (f"        <!-- M48T58: the set's NVRAM image ({s['nv']}) with the settings its first boot writes\n"
+               "             (scripts/mame_nvram_setup.py): no RTC checksum error or clock screens. A saved .nvm\n"
+               "             replaces it -->\n" if setup else
+               f"        <!-- M48T58: the set's NVRAM image ({s['nv']}). A saved .nvm replaces it -->\n")
+    nv_data = (f"        <part>{rows}\n        </part>\n"
+               f'        <part repeat="{len(nv) - used:#x}">00</part>\n')
     text = f"""<misterromdescription>
     <name>{s['desc']}</name>
     <setname>{setname}</setname>
@@ -192,9 +197,7 @@ def write(setname, s, romdir, mamever, mame_dir):
         <!-- program ROM: ROM_LOAD16_WORD_SWAP, reloaded -->
 {prg}{prg}        <!-- data ROM: ROM_LOAD32_WORD_SWAP, the first in bytes 0-1, the second in bytes 2-3 -->
 {pair(*s['data'])}{pad}        <!-- CG ROM: ROM_LOAD32_WORD_SWAP pairs, the second at 8 MB -->
-{''.join(pair(h, l) for h, l in s['cg'])}        <!-- M48T58: the set's NVRAM image -->
-        {part(s['nv'])}
-{patch}        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
+{''.join(pair(h, l) for h, l in s['cg'])}{nv_note}{nv_data}        <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         {part(s['snd_prg'])}
 {smp}    </rom>
     <!-- the M48T58 saved and restored (KonamiHornet.sv, ioctl index 4) -->

@@ -35,11 +35,11 @@
             <part name="837a15.24v" crc="e0620737" map="0012"/>
             <part name="837a16.32v" crc="bb7a7558" map="1200"/>
         </interleave>
-        <!-- M48T58: the set's NVRAM image -->
-        <part name="m48t58y-70pc1_aac" crc="7977736d"/>
-        <!-- ... with the settings its first boot writes (scripts/mame_nvram_setup.py): no RTC
-             checksum error or clock screens. A saved .nvm replaces it -->
-        <patch offset="0x1C00010">
+        <!-- M48T58: the set's NVRAM image (m48t58y-70pc1_aac) with the settings its first boot writes
+             (scripts/mame_nvram_setup.py): no RTC checksum error or clock screens. A saved .nvm
+             replaces it -->
+        <part>
+            47 58 38 33 37 00 11 06 19 98 41 41 43 00 02 ce
             1e be 00 00 00 00 00 00 00 00 01 01 00 00 00 00
             14 00 00 00 00 00 00 00 03 00 03 01 00 00 00 00
             00 00 df d4 46 b5 b1 86 00 00 af c8 52 b5 b1 81
@@ -47,7 +47,8 @@
             00 00 75 30 36 b3 31 82 00 00 61 a8 2a b4 71 82
             00 00 4e 20 8a b5 f1 8b 00 00 3a 98 76 b2 b1 85
             00 00 27 10 5e b5 f1 81 00 00 13 88 5e b5 b1 84
-        </patch>
+        </part>
+        <part repeat="0x1f80">00</part>
         <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         <part name="837a08.7s" crc="c3a7ff56"/>
         <part name="837a09.16p" crc="fb8f3dc2"/>

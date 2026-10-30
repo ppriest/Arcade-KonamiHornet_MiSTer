@@ -36,8 +36,11 @@
             <part name="778a15.24v" crc="d176ad0d" map="0012"/>
             <part name="778a16.32v" crc="6c0f46ea" map="1200"/>
         </interleave>
-        <!-- M48T58: the set's NVRAM image -->
-        <part name="m48t58y-70pc1" crc="3cff1b1d"/>
+        <!-- M48T58: the set's NVRAM image (m48t58y-70pc1). A saved .nvm replaces it -->
+        <part>
+            47 58 37 37 38 00 00 00 19 98 4a 41 41 00 02 c2
+        </part>
+        <part repeat="0x1ff0">00</part>
         <!-- the sound board (MiSTer_ArcadeSoundServer): at 0x1C02000 and 0x1C82000, hornet_sndbridge's PROG and SAMPLES -->
         <part name="778a08.7s" crc="6259b4bf"/>
         <part name="778a09.16p" crc="e8c6fd93"/>
