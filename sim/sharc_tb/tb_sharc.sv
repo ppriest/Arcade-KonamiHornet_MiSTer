@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // sharc_core alone; main.cpp is the external bus, the state loader and the trace writer.
-module tb_sharc (
+module tb_sharc #(parameter bit MAME_RND = 1) (
     input  logic        clk, reset, ce,
     output logic        ext_req, ext_we,
     output logic [31:0] ext_addr, ext_wdata,
@@ -24,7 +24,7 @@ module tb_sharc (
     input  logic [5:0]  dbg_widx,
     input  logic [63:0] dbg_wdata
 );
-    sharc_core dsp (
+    sharc_core #(.MAME_RND(MAME_RND)) dsp (
         .clk, .reset, .ce, .boot(1'b0), .ext_req, .ext_we, .ext_addr, .ext_wdata, .ext_ack, .ext_rdata,
         .irq_in(3'b000), .irq_assert(3'b000), .irq_check_en, .dbg_irq_set,
         .dbg_exec, .dbg_pc, .dbg_op, .dbg_sel, .dbg_val, .dbg_idle,

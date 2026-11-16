@@ -1,22 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Float multiply in two stages, bit-exact to sharc_fp_pkg::f_mul (the multiplier flushes
-// neither operands nor result). Stage 1 registers at `en`; the result and flags are stage 2's,
-// combinational, in the clock after.
+// neither operands nor result), or with MAME_RND 0 to man_mul. Stage 1 registers at `en`; the
+// result and flags are stage 2's, combinational, in the clock after.
 //
-// Fast path: normal (or zero, infinite, NaN) operands whose product cannot underflow: one DSP
-// product (stage 1), a one-bit normalise and the rounding (stage 2). Slow path: a denormal
-// operand, or an exponent sum small enough that the result may be denormal: `busy` holds the
-// pipeline (en low) for four clocks while the product is normalised, multiplied, shifted to the
-// denormal boundary and rounded in steps; the result then enters stage 2 with the next en.
+// MAME_RND 1. Fast path: normal (or zero, infinite, NaN) operands whose product cannot
+// underflow: one DSP product (stage 1), a one-bit normalise and the rounding (stage 2). Slow
+// path: a denormal operand, or an exponent sum small enough that the result may be denormal:
+// `busy` holds the pipeline (en low) for four clocks while the product is normalised,
+// multiplied, shifted to the denormal boundary and rounded in steps; the result then enters
+// stage 2 with the next en.
+//
+// MAME_RND 0 (the manual, sharc_fp_pkg::man_mul): operands flushed, so there is only the fast
+// path and `busy` is 0. With `rnd32`: toward zero under `trunc`, else to nearest, and a
+// post-rounded underflow (exponent unbounded) is a signed zero with MU / MUS (p. 2-16). With
+// `rnd32` clear: to nearest, underflow and overflow decided on the exact product, so a round-up
+// across 2^128 gives NORM.MAX. An overflow gives NORM.MAX under `trunc`.
 
-module sharc_fmul (
+module sharc_fmul #(
+    parameter bit MAME_RND = 0
+) (
     input  logic        clk,
     input  logic        en,             // advance the pipeline
     input  logic        restart,        // new operands: the slow path starts again
     input  logic        valid,          // x, y are a multiply's operands
     input  logic [31:0] x,
     input  logic [31:0] y,
+    input  logic        trunc,          // MODE1.TRUNCATE (MAME_RND 0)
+    input  logic        rnd32,          // MODE1.RND32 (MAME_RND 0)
     output logic        busy,           // slow path: keep en low and the operands held
     output logic [31:0] r,
     output logic [31:0] astat,          // MN MV MU MI
@@ -24,6 +35,11 @@ module sharc_fmul (
 );
 
 import sharc_fp_pkg::*;
+
+generate if (MAME_RND) begin : g_mame
+
+logic unused_trunc;
+assign unused_trunc = trunc ^ rnd32;
 
 // ---------------------------------------------------------------- stage 1
 
@@ -141,5 +157,81 @@ always_comb begin
         stky  = (is_inf(res) ? MVS : 32'h0) | (is_den(res) ? MUS : 32'h0);
     end
 end
+
+end else begin : g_man
+
+// ---------------------------------------------------------------- stage 1
+
+logic [31:0] xf, yf;
+logic        sg, nan1, inf1, zero1;
+logic [47:0] p;
+logic [9:0]  esum;
+
+always_comb begin
+    xf = flush(x);
+    yf = flush(y);
+    sg = xf[31] ^ yf[31];
+    nan1 = nan_mul(xf, yf);
+    inf1 = is_inf(xf) || is_inf(yf);
+    zero1 = is_zero(xf) || is_zero(yf);
+    p = {1'b1, xf[22:0]} * {1'b1, yf[22:0]};
+    esum = {2'b0, xf[30:23]} + {2'b0, yf[30:23]};
+end
+
+logic        v_nan, v_inf, v_zero, v_sg, v_trunc, v_rnd32;
+logic [47:0] v_p;
+logic [9:0]  v_esum;
+
+always_ff @(posedge clk) if (en) begin
+    v_nan <= nan1;
+    v_inf <= inf1;
+    v_zero <= zero1;
+    v_sg <= sg;
+    v_trunc <= trunc;
+    v_rnd32 <= rnd32;
+    v_p <= p;
+    v_esum <= esum;
+end
+
+assign busy = 1'b0;
+logic unused_slow;
+assign unused_slow = restart ^ valid;
+
+// ---------------------------------------------------------------- stage 2
+
+logic [31:0] res;
+logic        ovf, tiny;
+always_comb begin
+    logic [26:0] s;
+    logic signed [11:0] e, ee;
+    logic [24:0] m;
+    logic        up, nc;
+    nc = !v_rnd32;
+    if (v_p[47]) begin s = {v_p[47:22], v_p[21:0] != 0}; e = $signed({2'b0, v_esum}) - 12'sd126; end
+    else         begin s = {v_p[46:21], v_p[20:0] != 0}; e = $signed({2'b0, v_esum}) - 12'sd127; end
+    up = !(v_trunc && v_rnd32) && s[2] && (s[1] || s[0] || s[3]);
+    m = {1'b0, s[26:3]} + {24'h0, up};
+    ee = e;
+    if (m[24]) begin m = m >> 1; ee = e + 12'sd1; end
+    ovf  = nc ? e >= 12'sd255 : ee >= 12'sd255;
+    tiny = nc ? e < 12'sd1 : ee < 12'sd1;
+    if (ovf)                 res = {v_sg, v_trunc ? MAXF[30:0] : INF[30:0]};
+    else if (tiny)           res = {v_sg, 31'h0};
+    else if (ee >= 12'sd255) res = {v_sg, MAXF[30:0]};
+    else                     res = {v_sg, ee[7:0], m[22:0]};
+end
+
+always_comb begin
+    if (v_nan) begin r = NAN; astat = MI; stky = MIS; end
+    else if (v_inf) begin r = {v_sg, INF[30:0]}; astat = MV | (v_sg ? MN : 32'h0); stky = MVS; end
+    else if (v_zero) begin r = {v_sg, 31'h0}; astat = v_sg ? MN : 32'h0; stky = '0; end
+    else begin
+        r = res;
+        astat = (v_sg ? MN : 32'h0) | (ovf ? MV : 32'h0) | (tiny ? MU : 32'h0);
+        stky  = (ovf ? MVS : 32'h0) | (tiny ? MUS : 32'h0);
+    end
+end
+
+end endgenerate
 
 endmodule

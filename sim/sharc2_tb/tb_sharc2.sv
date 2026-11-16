@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // sharc2_core alone; main.cpp (sim/sharc_tb's, for v2) is the external bus, the state loader and
 // the trace writer.
-module tb_sharc2 #(parameter int DMW = 32768, parameter bit SUBSET = 1, parameter bit ONE_FADD = 1) (
+module tb_sharc2 #(parameter int DMW = 32768, parameter bit SUBSET = 1, parameter bit ONE_FADD = 1,
+                   parameter bit MAME_RND = 1) (
     input  logic        clk, reset, ce, serial,
     output logic        ext_req, ext_we,
     output logic [31:0] ext_addr, ext_wdata,
@@ -27,7 +28,7 @@ module tb_sharc2 #(parameter int DMW = 32768, parameter bit SUBSET = 1, paramete
     input  logic [5:0]  dbg_widx,
     input  logic [63:0] dbg_wdata
 );
-    sharc2_core #(.BENCH(1), .DM_WORDS(DMW), .SUBSET(SUBSET), .ONE_FADD(ONE_FADD)) dsp (
+    sharc2_core #(.BENCH(1), .DM_WORDS(DMW), .SUBSET(SUBSET), .ONE_FADD(ONE_FADD), .MAME_RND(MAME_RND)) dsp (
         .clk, .reset, .ce, .boot(1'b0), .serial, .ext_req, .ext_we, .ext_addr, .ext_wdata, .ext_ack, .ext_rdata, .ext_post(1'b0),
         .irq_in(3'b000), .irq_assert(3'b000), .irq_check_en, .dbg_irq_set, .dbg_iop_ovr, .dbg_iop_val,
         .dbg_exec, .dbg_pc, .dbg_op, .dbg_sel, .dbg_val, .dbg_idle, .unsup(),

@@ -26,7 +26,8 @@
 // 25 kHz (HACKS.md).
 
 module hornet_board #(
-    parameter RECIP_HEX = "rtl/raster/vraster_recip.hex"   // vraster's seed ROM, from the project
+    parameter RECIP_HEX = "rtl/raster/vraster_recip.hex",  // vraster's seed ROM, from the project
+    parameter bit SHARC_MAME_RND = 0    // the SHARC's float rounding: 0 the manual's, 1 MAME's (docs/MAME_KLUDGES.md)
 ) (
     input  logic        clk,
     input  logic        clk_dsp,       // the SHARC's clock (asynchronous to clk; hornet_cdc)
@@ -624,7 +625,7 @@ hornet_pulse u_sboot (.clk_a(clk), .a(ev_dsp_reset), .clk_b(clk_dsp), .b(dsp_boo
 hornet_pulse u_sirq0 (.clk_a(clk), .a(dsp_irq_assert[0]), .clk_b(clk_dsp), .b(dsp_irq[0]));
 hornet_pulse u_sirq1 (.clk_a(clk), .a(dsp_irq_assert[1]), .clk_b(clk_dsp), .b(dsp_irq[1]));
 
-sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0), .SUBSET(1), .ONE_FADD(1)) dsp (  // docs/HACKS.md
+sharc2_core #(.DM_WORDS(16384), .DMA_LOCK(0), .DMA_PACK(0), .SUBSET(1), .ONE_FADD(1), .MAME_RND(SHARC_MAME_RND)) dsp (  // docs/HACKS.md
     .clk(clk_dsp), .reset(dsp_reset), .ce(dsp_ce), .boot(dsp_boot), .serial(1'b0),
     .ext_req(dx_req), .ext_we(dx_we), .ext_addr(dx_addr), .ext_wdata(dx_wdata),
     .ext_ack(dx_ack), .ext_rdata(dx_rdata), .ext_post(dx_post),

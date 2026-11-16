@@ -640,4 +640,356 @@ function automatic fres_t f_mul(input logic [31:0] x, input logic [31:0] y);
     return o;
 endfunction
 
+// ------------------------------------------------------------------------------------------
+// The ADSP-2106x SHARC User's Manual (rev 2.1, 82-000795-03) for the cores' MAME_RND = 0: every
+// float operation as its Appendix B entry says, results and flags. MAME's functions above are
+// unchanged. docs/MAME_KLUDGES.md ("SHARC at MAME_RND 0") cites the page for each rule and lists
+// what the manual leaves open. In short:
+//   - denormal operands are flushed to zero in every unit (p. 2-3);
+//   - MODE1.RND32 set: results rounded at 24 bits, toward zero under TRUNC, else to nearest
+//     (p. 2-7, 2-15); underflow and overflow are of the post-rounded result, exponent unbounded
+//     (p. 2-8, 2-16, 2-17); an underflow is a signed zero with AZ and AUS, or MU and MUS;
+//   - RND32 clear: the chip's results are 40 bits, not built; these registers hold them rounded
+//     to nearest at 24 bits (MAME's approximation), and underflow and overflow are decided on the
+//     exact value, which the 40-bit rounding moves by less than 2^-32;
+//   - an overflow is +-infinity, or +-NORM.MAX under TRUNC, with AV and AVS, or MV and MVS;
+//   - FIX, FLOAT and SCALB scale exactly (no C int); FIX and LOGB saturate under ALUSAT;
+//   - FLOAT is exact at 40 bits (p. B-38): its 24-bit view is truncated under RND32, else rounded
+//     to nearest (docs/HACKS.md).
+// The tiny marker below is a result that underflowed: the smallest denormal with its sign, which
+// alu_fin and man_mul turn into a signed zero with the underflow flags.
+// ------------------------------------------------------------------------------------------
+
+localparam logic [31:0] MAXF = 32'h7F7F_FFFF;       // NORM.MAX
+localparam logic [31:0] ALL1 = 32'hFFFF_FFFF;       // "all 1s"
+
+// Round a normalised significand (hidden bit s[26], value s * 2^(e - 127 - 26), e unbounded) at
+// 24 bits. rz: toward zero. nc (RND32 clear): to nearest, underflow and overflow decided on the
+// exact value, so a round-up across 2^128 gives NORM.MAX. Overflow gives the infinity, underflow
+// the tiny marker.
+function automatic logic [31:0] man_pack(input logic sgn, input logic signed [11:0] e,
+                                         input logic [26:0] s, input logic rz, input logic nc);
+    logic [24:0] m;
+    logic        up, tiny, ovf;
+    logic signed [11:0] ee;
+    up = !rz && s[2] && (s[1] || s[0] || s[3]);
+    m  = {1'b0, s[26:3]} + {24'h0, up};
+    ee = e;
+    if (m[24]) begin m = m >> 1; ee = ee + 12'sd1; end
+    tiny = nc ? e < 12'sd1 : ee < 12'sd1;
+    ovf  = nc ? e >= 12'sd255 : ee >= 12'sd255;
+    if (ovf)                   man_pack = {sgn, INF[30:0]};
+    else if (tiny)             man_pack = {sgn, 31'h1};
+    else if (ee >= 12'sd255)   man_pack = {sgn, MAXF[30:0]};
+    else                       man_pack = {sgn, ee[7:0], m[22:0]};
+endfunction
+
+// the exact sum of two flushed, finite operands, normalised (s[26] set), or zero
+typedef struct packed {
+    logic        z;
+    logic        sgn;
+    logic signed [11:0] e;
+    logic [26:0] s;
+} msum_t;
+
+function automatic msum_t man_norm_sum(input logic [31:0] a, input logic [31:0] b);
+    msum_t o;
+    logic [31:0] x, y;
+    logic [7:0]  ex, ey;
+    logic [23:0] mx, my;
+    logic [8:0]  d;
+    logic [26:0] sx, sy;
+    logic [27:0] s;
+    logic        stk;
+    logic [4:0]  lz;
+    o = '0;
+    if (a[30:0] >= b[30:0]) begin x = a; y = b; end else begin x = b; y = a; end
+    if (is_zero(x)) begin o.z = 1'b1; o.sgn = a[31] & b[31]; return o; end
+    ex = x[30:23];
+    ey = is_zero(y) ? x[30:23] : y[30:23];
+    mx = {1'b1, x[22:0]};
+    my = {!is_zero(y), y[22:0]};
+    d  = {1'b0, ex} - {1'b0, ey};
+    sx = {mx, 3'b000};
+    if (d >= 9'd27) sy = {26'h0, my != 0};
+    else begin
+        logic [53:0] wide;
+        wide = {my, 3'b000, 27'h0} >> d;
+        sy   = {wide[53:28], wide[27] | (wide[26:0] != 0)};
+    end
+    o.sgn = x[31];
+    o.e = {4'h0, ex};
+    if (x[31] == y[31]) begin
+        s = {1'b0, sx} + {1'b0, sy};
+        if (s[27]) begin
+            stk = s[0];
+            s = s >> 1;
+            s[0] = s[0] | stk;
+            o.e = o.e + 12'sd1;
+        end
+    end else begin
+        s = {1'b0, sx} - {1'b0, sy};
+        if (s == 0) begin o.z = 1'b1; o.sgn = 1'b0; return o; end   // exact cancellation: +0
+        lz = 5'd0;
+        for (int i = 0; i < 27; i++) if (s[i]) lz = 5'(26 - i);
+        s = s << lz;
+        o.e = o.e - {7'h0, lz};
+    end
+    o.s = s[26:0];
+    return o;
+endfunction
+
+// a + b (half: (a + b) / 2, rounded once), operands flushed; an infinite operand gives itself
+function automatic logic [31:0] man_sum(input logic [31:0] a, input logic [31:0] b, input logic half,
+                                        input logic rz, input logic nc);
+    msum_t q;
+    if (is_inf(a)) return a;
+    if (is_inf(b)) return b;
+    q = man_norm_sum(a, b);
+    if (q.z) return {q.sgn, 31'h0};
+    return man_pack(q.sgn, q.e - (half ? 12'sd1 : 12'sd0), q.s, rz, nc);
+endfunction
+
+// a * b of flushed operands
+function automatic logic [31:0] man_prod(input logic [31:0] a, input logic [31:0] b, input logic rz,
+                                         input logic nc);
+    logic        sg;
+    logic [47:0] p;
+    logic [26:0] s;
+    logic signed [11:0] e;
+    sg = a[31] ^ b[31];
+    if (is_inf(a) || is_inf(b)) return {sg, INF[30:0]};
+    if (is_zero(a) || is_zero(b)) return {sg, 31'h0};
+    p = {1'b1, a[22:0]} * {1'b1, b[22:0]};
+    e = $signed({4'h0, a[30:23]}) + $signed({4'h0, b[30:23]}) - 12'sd127;
+    if (p[47]) begin s = {p[47:22], p[21:0] != 0}; e = e + 12'sd1; end
+    else             s = {p[46:21], p[20:0] != 0};
+    return man_pack(sg, e, s, rz, nc);
+endfunction
+
+// ---- the ALU
+
+// Fn = Fx + Fy, Fx - Fy, (Fx + Fy)/2 (B-24, B-25, B-28): alu_fin's flags are the entries' (AZ on
+// a denormal or zero, AUS on a denormal, AV and AVS on an overflow, NORM.MAX under TRUNC)
+function automatic fres_t man_alu(input logic [31:0] x, input logic [31:0] y, input logic sub,
+                                  input logic half, input logic trunc, input logic rnd32);
+    fres_t o;
+    if (sub ? nan_sub(x, y) : nan_add(x, y)) begin o = '0; o.r = NAN; o.astat = AI | AF; o.stky = AIS; return o; end
+    return alu_fin(man_sum(flush(x), flush(y) ^ (sub ? SIGN : 32'h0), half, trunc && rnd32, !rnd32), trunc);
+endfunction
+
+function automatic fres_t man_add(input logic [31:0] x, input logic [31:0] y, input logic trunc,
+                                  input logic rnd32);
+    return man_alu(x, y, 1'b0, 1'b0, trunc, rnd32);
+endfunction
+function automatic fres_t man_sub(input logic [31:0] x, input logic [31:0] y, input logic trunc,
+                                  input logic rnd32);
+    return man_alu(x, y, 1'b1, 1'b0, trunc, rnd32);
+endfunction
+function automatic fres_t man_avg(input logic [31:0] x, input logic [31:0] y, input logic trunc,
+                                  input logic rnd32);
+    return man_alu(x, y, 1'b0, 1'b1, trunc, rnd32);
+endfunction
+
+// Fa = Fx + Fy, Fs = Fx - Fy (B-78): AI if an input is a NaN or both are infinite; two infinities
+// give the infinity of the valid one and a NaN for the other (IEEE; the entry gives no values)
+function automatic fdual_t man_addsub(input logic [31:0] x, input logic [31:0] y, input logic trunc,
+                                      input logic rnd32);
+    fdual_t o;
+    fres_t a, s;
+    o = '0;
+    if (is_nan(x) || is_nan(y)) begin
+        o.add = NAN; o.sub = NAN; o.astat = AI | AF; o.stky = AIS;
+        return o;
+    end
+    a = man_add(x, y, trunc, rnd32);
+    s = man_sub(x, y, trunc, rnd32);
+    o.add = a.r; o.sub = s.r;
+    o.stky = a.stky | s.stky;
+    o.astat = ((a.astat | s.astat) & ~AN) | AF;
+    if (((a.astat & AI) == 0 && a.r[31]) || ((s.astat & AI) == 0 && s.r[31])) o.astat |= AN;
+    return o;
+endfunction
+
+// Rn = FIX Fx [BY Ry] (B-37); multifunction form the same (table B.7)
+function automatic fres_t man_fix(input logic [31:0] x, input logic scaled, input logic [31:0] ry,
+                                  input logic trunc, input logic alusat);
+    fres_t o;
+    logic [31:0] xf;
+    logic signed [33:0] e;
+    o = '0;
+    xf = flush(x);
+    e = $signed({26'h0, xf[30:23]}) - 34'sd127 + (scaled ? 34'($signed(ry)) : 34'sd0);
+    if (is_nan(xf)) begin
+        o.r = ALL1; o.astat = AI; o.stky = AIS;
+    end else if (is_inf(xf) || (!is_zero(xf) && e >= 34'sd31)) begin
+        // the mantissa shifted left: AV; saturated, or all 1s and invalid
+        o.astat = AV;
+        if (alusat) o.r = xf[31] ? 32'h8000_0000 : 32'h7FFF_FFFF;
+        else begin o.r = ALL1; o.astat |= AI; o.stky = AIS; end
+    end else if (!is_zero(xf)) begin
+        logic [23:0] m;
+        logic [31:0] q;
+        logic        half, rest, up;
+        m = {1'b1, xf[22:0]};
+        if (e < -34'sd126) o.stky = AUS;                 // the pre-rounded value is denormal
+        if (e >= 34'sd23) begin
+            q = {8'h0, m} << (e - 34'sd23);
+            half = 1'b0; rest = 1'b0;
+        end else if (e >= -34'sd1) begin
+            logic [55:0] w;
+            w = {m, 32'h0} >> (34'sd23 - e);             // integer part w[55:32]
+            q = {8'h0, w[55:32]};
+            half = w[31];
+            rest = w[30:0] != 0;
+        end else begin                                  // |x| < 1/2
+            q = 32'h0; half = 1'b0; rest = 1'b1;
+        end
+        up = trunc ? (xf[31] && (half || rest)) : (half && (rest || q[0]));
+        q = q + {31'h0, up};
+        o.r = xf[31] ? -q : q;
+    end
+    if (o.r[31]) o.astat |= AN;
+    if (o.r == 0) o.astat |= AZ;
+    o.astat |= AF;
+    return o;
+endfunction
+
+// Fn = FLOAT Rx [BY Ry] (B-38), both forms: exact, then 24 bits (truncated under RND32, else
+// nearest; a round-up past 2^128 of a value below it gives NORM.MAX)
+function automatic fres_t man_float(input logic [31:0] rx, input logic scaled, input logic [31:0] ry,
+                                    input logic trunc, input logic rnd32);
+    fres_t o;
+    o = '0;
+    if (rx != 0) begin
+        logic        sg, up;
+        logic [31:0] m, n;
+        logic [5:0]  lz;
+        logic [24:0] q;
+        logic signed [33:0] e;
+        sg = rx[31];
+        m  = sg ? -rx : rx;
+        lz = clz32(m);
+        n  = m << lz;
+        e  = 34'sd31 - $signed({28'h0, lz}) + (scaled ? 34'($signed(ry)) : 34'sd0);
+        up = !rnd32 && n[7] && (n[6:0] != 0 || n[8]);
+        q  = {1'b0, n[31:8]} + {24'h0, up};
+        if (e > 34'sd127)       begin o.r = {sg, trunc ? MAXF[30:0] : INF[30:0]}; o.astat = AV; o.stky = AVS; end
+        else if (e < -34'sd126) begin o.r = {sg, 31'h0}; o.stky = AUS; end
+        else if (q[24])         o.r = (e == 34'sd127) ? {sg, MAXF[30:0]} : {sg, 8'(e + 34'sd128), 23'h0};
+        else                    o.r = {sg, 8'(e + 34'sd127), q[22:0]};
+    end
+    if (o.r[31]) o.astat |= AN;
+    if (is_zero(o.r)) o.astat |= AZ;
+    o.astat |= AF;
+    return o;
+endfunction
+
+// Fn = SCALB Fx BY Ry (B-34): exact; overflow +-infinity or +-NORM.MAX, a denormal result +-0
+function automatic fres_t man_scalb(input logic [31:0] x, input logic [31:0] ry, input logic trunc);
+    fres_t o;
+    logic [31:0] xf;
+    logic signed [33:0] e;
+    o = '0;
+    xf = flush(x);
+    e = $signed({26'h0, xf[30:23]}) - 34'sd127 + 34'($signed(ry));
+    if (is_nan(xf)) begin o.r = NAN; o.astat = AI | AF; o.stky = AIS; return o; end
+    if (is_zero(xf))       o.r = xf;
+    else if (is_inf(xf) || e > 34'sd127) begin
+        o.r = {xf[31], trunc ? MAXF[30:0] : INF[30:0]}; o.astat = AV; o.stky = AVS;
+    end else if (e < -34'sd126) begin o.r = xf & SIGN; o.stky = AUS; end
+    else                   o.r = {xf[31], 8'(e + 34'sd127), xf[22:0]};
+    if (o.r[31]) o.astat |= AN;
+    if (is_zero(o.r)) o.astat |= AZ;
+    o.astat |= AF;
+    return o;
+endfunction
+
+// Rn = LOGB Fx (B-36)
+function automatic fres_t man_logb(input logic [31:0] x, input logic alusat);
+    fres_t o;
+    logic [31:0] xf;
+    o = '0;
+    xf = flush(x);
+    if (is_nan(xf))       begin o.r = ALL1; o.astat = AI; o.stky = AIS; end
+    else if (is_inf(xf))  begin o.r = alusat ? 32'h7FFF_FFFF : INF; o.astat = AV; end
+    else if (is_zero(xf)) begin o.r = alusat ? 32'h8000_0000 : (SIGN | INF); o.astat = AV; end
+    else                  o.r = 32'($signed({1'b0, xf[30:23]}) - 32'sd127);
+    if (o.r[31]) o.astat |= AN;
+    if (o.r == 0) o.astat |= AZ;
+    o.astat |= AF;
+    return o;
+endfunction
+
+// Fn = RSQRTS Fx (B-40): +-0 gives +-infinity (AV), +infinity +0, a NaN or a negative nonzero
+// input all 1s (AI); the seed MAME's
+function automatic fres_t man_rsqrts(input logic [31:0] x);
+    fres_t o, seed;
+    logic [31:0] xf;
+    o = '0;
+    xf = flush(x);
+    if (is_nan(xf) || (xf[31] && !is_zero(xf))) begin o.r = ALL1; o.astat = AI; o.stky = AIS; end
+    else if (is_zero(xf))  begin o.r = xf | INF; o.astat = AV; end
+    else if (is_inf(xf))   o.r = 32'h0;
+    else begin seed = f_rsqrts(xf); o.r = seed.r; end   // Quartus 17 has no field select on a call
+    if (xf == SIGN) o.astat |= AN;
+    if (is_zero(o.r)) o.astat |= AZ;
+    o.astat |= AF;
+    return o;
+endfunction
+
+// Fn = RECIPS Fx (B-39): MAME's seed and special cases, the operand flushed; AN on a negative
+// input, -0 included (B-40 counts -0 as negative)
+function automatic fres_t man_recips(input logic [31:0] x);
+    fres_t o;
+    o = f_recips(flush(x));
+    if (x[31] && !is_nan(x)) o.astat |= AN;
+    return o;
+endfunction
+
+// Fn = MIN / MAX (Fx, Fy) (B-42, B-43): MIN of +0 and -0 is -0, MAX +0
+function automatic fres_t man_minmax(input logic [31:0] x, input logic [31:0] y, input logic max);
+    fres_t o;
+    logic [31:0] xf, yf;
+    o = '0;
+    xf = flush(x); yf = flush(y);
+    if (is_nan(xf) || is_nan(yf)) begin o.r = NAN; o.astat = AI | AF; o.stky = AIS; return o; end
+    if (is_zero(xf) && is_zero(yf)) o.r = max ? (xf & yf) : (xf | yf);
+    else if (max)                   o.r = f_lt(xf, yf) ? yf : xf;
+    else                            o.r = f_lt(yf, xf) ? yf : xf;
+    if (o.r[31]) o.astat |= AN;
+    if (is_zero(o.r)) o.astat |= AZ;
+    o.astat |= AF;
+    return o;
+endfunction
+
+// COMP(Fx, Fy) (B-29): the operands flushed (p. 2-3)
+function automatic fres_t man_comp(input logic [31:0] x, input logic [31:0] y, input logic [31:0] astat);
+    return f_comp(flush(x), flush(y), astat);
+endfunction
+
+// ---- the multiplier
+
+// Fn = Fx * Fy (B-53; p. 2-16, 2-17): operands flushed; MI on a NaN or infinity times zero; MV and
+// MVS on a post-rounded overflow (+-infinity, or +-NORM.MAX under TRUNC); MU and MUS on a
+// post-rounded underflow, the result a signed zero
+function automatic fres_t man_mul(input logic [31:0] x, input logic [31:0] y, input logic trunc,
+                                  input logic rnd32);
+    fres_t o;
+    logic [31:0] xf, yf;
+    o = '0;
+    xf = flush(x); yf = flush(y);
+    if (nan_mul(xf, yf)) begin o.r = NAN; o.astat = MI; o.stky = MIS; return o; end
+    o.r = man_prod(xf, yf, trunc && rnd32, !rnd32);
+    if (is_inf(o.r)) begin
+        o.astat |= MV; o.stky |= MVS;
+        if (trunc && !is_inf(xf) && !is_inf(yf)) o.r = (o.r & SIGN) | MAXF;
+    end else if (is_den(o.r)) begin
+        o.astat |= MU; o.stky |= MUS;
+        o.r = o.r & SIGN;
+    end
+    if (o.r[31]) o.astat |= MN;
+    return o;
+endfunction
+
 endpackage
