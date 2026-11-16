@@ -47,6 +47,7 @@ int main(int argc, char **argv) {
         if (rng() % 8 == 0) y = special(y);
         if (rng() % 16 == 0) y = (rng() & 0x807fffff) | ((128 - ((x >> 23) & 0xff) + rng() % 6) & 0xff) << 23;
         t->x = x; t->y = y; t->sub = rng() & 1; t->trunc = (rng() % 4) == 0;
+        t->rnd32 = ((x >> 3) ^ (y >> 5)) & 1;           // from the operands: the draws stay as they were
         for (;;) {
             t->clk = 0; t->eval();
             t->en = !t->busy;

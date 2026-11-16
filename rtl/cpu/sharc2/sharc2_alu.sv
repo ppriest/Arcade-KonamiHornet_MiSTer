@@ -14,7 +14,8 @@
 
 module sharc2_alu #(
     parameter bit SUBSET = 0,          // the game's subset of the compute operations (sharc2_pkg comp_unsup)
-    parameter bit ONE_FADD = 0         // the dual forms' subtract through adder 0 too: X held a clock more
+    parameter bit ONE_FADD = 0,        // the dual forms' subtract through adder 0 too: X held a clock more
+    parameter bit MAME_RND = 0         // float rounding: 1 MAME's, 0 the manual's (sharc_fp_pkg man_*)
 ) (
     input  logic        clk,
     input  logic        ce,
@@ -39,6 +40,7 @@ module sharc2_alu #(
     input  logic [31:0] ax, ay, mx, my, xe,
     input  logic [31:0] astat_in,       // before this instruction; valid when needs_astat
     input  logic        trunc, alusat,
+    input  logic        rnd32,          // MODE1.RND32: read only at MAME_RND 0
     input  logic [63:0] mrf, mrb,
     output logic        x_busy,
     output logic        x_needs_astat,
@@ -130,15 +132,15 @@ logic        fa0_nan, fa0_infb, fm_busy;
 logic        x_dl, dual_n, fa0_first;
 assign fa0_first = ONE_FADD && x_dl && !dual_n;
 
-sharc_fadd u_fadd0 (.clk, .en(ce && (x_go || fa0_first)), .x(ax), .y(ay), .sub(fa0_first || xi.sub), .trunc,
+sharc_fadd #(.MAME_RND(MAME_RND)) u_fadd0 (.clk, .en(ce && (x_go || fa0_first)), .x(ax), .y(ay), .sub(fa0_first || xi.sub), .trunc, .rnd32,
                     .r(fa0_r), .astat(fa0_a), .stky(fa0_s), .nan_in(fa0_nan), .inf_both(fa0_infb));
 generate if (ONE_FADD) begin : g_one_fadd
     always_ff @(posedge clk) if (ce && x_dl && dual_n) begin fa1_r <= fa0_r; fa1_a <= fa0_a; fa1_s <= fa0_s; end
 end else begin : g_two_fadd
-    sharc_fadd u_fadd1 (.clk, .en(ce && x_go), .x(ax), .y(ay), .sub(1'b1), .trunc,
+    sharc_fadd #(.MAME_RND(MAME_RND)) u_fadd1 (.clk, .en(ce && x_go), .x(ax), .y(ay), .sub(1'b1), .trunc, .rnd32,
                         .r(fa1_r), .astat(fa1_a), .stky(fa1_s), .nan_in(), .inf_both());
 end endgenerate
-sharc_fmul u_fmul (.clk, .en(ce && x_go), .restart(ce && (d_go || x_drop)), .valid(xi.fmul), .x(mx), .y(my), .busy(fm_busy),
+sharc_fmul #(.MAME_RND(MAME_RND)) u_fmul (.clk, .en(ce && x_go), .restart(ce && (d_go || x_drop)), .valid(xi.fmul), .x(mx), .y(my), .trunc, .rnd32, .busy(fm_busy),
                    .r(fm_r), .astat(fm_a), .stky(fm_s));
 
 // fixed multiplier: the product in X, the accumulate and flags in W
@@ -171,7 +173,7 @@ assign x_busy = fm_busy || (x_avg && avg_n < 2'd2) || fa0_first;
 // ---------------------------------------------------------------- W
 
 cinfo_t      wi;
-logic        w_exec, w_trunc, w_xsign, w_ysign;
+logic        w_exec, w_trunc, w_rnd32, w_alusat, w_xsign, w_ysign;
 logic [7:0]  w_top;                    // ASTAT[31:24] before the op (COMP's history)
 logic [5:0]  w_mop;
 logic [7:0]  w_op;
@@ -183,6 +185,8 @@ always_ff @(posedge clk) if (ce) begin
         wi <= xi;
         w_exec <= x_exec && x_comp_on;
         w_trunc <= trunc;
+        w_rnd32 <= rnd32;
+        w_alusat <= alusat;
         w_xsign <= ax[31]; w_ysign <= ay[31];
         w_top <= astat_in[31:24];
         w_mop <= x_comp[21:16];
@@ -206,25 +210,27 @@ always_comb begin
     fres_t       fix_o, float_o;
     by = mc_op == MC_FIXBY || mc_op == MC_FLOATBY || mc_op == MC_FLOAT_MF || mc_op == MC_FIX_MF;
     mf = mc_op == MC_FLOAT_MF || mc_op == MC_FIX_MF;
-    fix_o = f_fix(mc_x, by, by ? mc_y : 32'h0, w_trunc, mf);
-    float_o = f_float(mc_x, by, by ? mc_y : 32'h0, mf);
+    // MAME_RND 0: the manual's (sharc_fp_pkg man_*); PASS, NEG, ABS, COPYSIGN and CLIP are the
+    // same in both
+    fix_o = MAME_RND ? f_fix(mc_x, by, by ? mc_y : 32'h0, w_trunc, mf) : man_fix(mc_x, by, by ? mc_y : 32'h0, w_trunc, w_alusat);
+    float_o = MAME_RND ? f_float(mc_x, by, by ? mc_y : 32'h0, mf) : man_float(mc_x, by, by ? mc_y : 32'h0, w_trunc, w_rnd32);
     case (mc_op)
     MC_PASS:     mc_o = f_pass(mc_x);
     MC_NEG:      mc_o = f_neg(mc_x);
     MC_ABS:      mc_o = f_abs(mc_x);
-    MC_SCALB:    mc_o = f_scalb(mc_x, mc_y);
-    MC_LOGB:     mc_o = f_logb(mc_x);
-    MC_RECIPS:   mc_o = f_recips(mc_x);
-    MC_RSQRTS:   mc_o = f_rsqrts(mc_x);
+    MC_SCALB:    mc_o = MAME_RND ? f_scalb(mc_x, mc_y) : man_scalb(mc_x, mc_y, w_trunc);
+    MC_LOGB:     mc_o = MAME_RND ? f_logb(mc_x) : man_logb(mc_x, w_alusat);
+    MC_RECIPS:   mc_o = MAME_RND ? f_recips(mc_x) : man_recips(mc_x);
+    MC_RSQRTS:   mc_o = MAME_RND ? f_rsqrts(mc_x) : man_rsqrts(mc_x);
     MC_FIX, MC_FIXBY: mc_o = fix_o;
     MC_FLOAT, MC_FLOATBY, MC_FLOAT_MF: mc_o = float_o;
     MC_COPYSIGN: mc_o = f_copysign(mc_x, mc_y);
-    MC_MIN, MC_MAX: mc_o = f_minmax(mc_x, mc_y, mc_op == MC_MAX);
+    MC_MIN, MC_MAX: mc_o = MAME_RND ? f_minmax(mc_x, mc_y, mc_op == MC_MAX) : man_minmax(mc_x, mc_y, mc_op == MC_MAX);
     MC_CLIP:     mc_o = f_clip(mc_x, mc_y);
-    MC_COMP:     mc_o = f_comp(mc_x, mc_y, 32'h0);          // history byte added in W
+    MC_COMP:     mc_o = MAME_RND ? f_comp(mc_x, mc_y, 32'h0) : man_comp(mc_x, mc_y, 32'h0);   // history byte added in W
     default:     mc_o = fix_o;                              // MC_FIX_MF
     endcase
-    avg_o = SUBSET ? '0 : f_avg(avg_x, avg_y, w_trunc);
+    avg_o = SUBSET ? '0 : MAME_RND ? f_avg(avg_x, avg_y, w_trunc) : man_avg(avg_x, avg_y, w_trunc, w_rnd32);
 end
 
 // FADD_FSUB's two infinite operands: MAME stores the integer pattern converted (compute.hxx:386)
@@ -266,7 +272,8 @@ always_comb begin
             a.stky = fa0_s | fa1_s;
         end else begin
             logic [31:0] pat;
-            pat = w_xsign ? INF_PAT_N : INF_PAT_P;
+            // MAME_RND 0: the valid one's infinity (p. B-78 sets AI; IEEE gives the values)
+            pat = MAME_RND ? (w_xsign ? INF_PAT_N : INF_PAT_P) : {w_xsign, w_trunc ? MAXF[30:0] : INF[30:0]};
             if (w_xsign ^ w_ysign) begin a.r = NAN; sub_r = pat; end
             else begin a.r = pat; sub_r = NAN; end
             a.astat = (w_xsign ? AN : 32'h0) | AV | AI | AF;

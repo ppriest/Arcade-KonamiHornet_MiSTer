@@ -1,0 +1,4 @@
+rtl/cpu/sharc/sharc_fp_pkg.sv
+rtl/cpu/sharc2/sharc_fadd.sv
+rtl/cpu/sharc2/sharc_fmul.sv
+sim/sharcman_tb/tb_sharcman.sv

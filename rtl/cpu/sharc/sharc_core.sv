@@ -38,7 +38,8 @@
 
 module sharc_core #(
     parameter int PM_WORDS = 20480,     // 0x20000-0x24FFF
-    parameter int DM_WORDS = 32768      // block 1
+    parameter int DM_WORDS = 32768,     // block 1
+    parameter bit MAME_RND = 0          // float rounding: 1 MAME's, 0 the manual's (sharc_fp_pkg man_*)
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -92,7 +93,7 @@ localparam logic [31:0] PCFL = 32'h0020_0000, PCEM = 32'h0040_0000, SSOV = 32'h0
 localparam logic [31:0] MODE1_SRD1H = 32'h08, MODE1_SRD1L = 32'h10, MODE1_SRD2H = 32'h20,
                         MODE1_SRD2L = 32'h40, MODE1_SRRFH = 32'h80, MODE1_SRRFL = 32'h400,
                         MODE1_IRPTEN = 32'h1000, MODE1_ALUSAT = 32'h2000,
-                        MODE1_TRUNCATE = 32'h8000;
+                        MODE1_TRUNCATE = 32'h8000, MODE1_RND32 = 32'h1_0000;
 
 // ------------------------------------------------------------------------------------------
 // State (MAME's sharc_internal_state)
@@ -266,6 +267,50 @@ function automatic logic do_cond(input st_t s, input logic [4:0] c);
     if (c == 5'h0f)      do_cond = s.curlcntr == 1;
     else if (c == 5'h1f) do_cond = 1'b0;
     else                 do_cond = if_cond(s, c);
+endfunction
+
+// the float operations MAME_RND selects: 1 MAME's (sharc_fp_pkg f_*), 0 the manual's (man_*;
+// docs/MAME_KLUDGES.md, "SHARC at MAME_RND 0"). RND32 and ALUSAT are read only by the manual's.
+function automatic fres_t fp_add(input logic [31:0] x, input logic [31:0] y, input logic trunc, input logic rnd32);
+    return MAME_RND ? f_add(x, y, trunc) : man_add(x, y, trunc, rnd32);
+endfunction
+function automatic fres_t fp_sub(input logic [31:0] x, input logic [31:0] y, input logic trunc, input logic rnd32);
+    return MAME_RND ? f_sub(x, y, trunc) : man_sub(x, y, trunc, rnd32);
+endfunction
+function automatic fres_t fp_avg(input logic [31:0] x, input logic [31:0] y, input logic trunc, input logic rnd32);
+    return MAME_RND ? f_avg(x, y, trunc) : man_avg(x, y, trunc, rnd32);
+endfunction
+function automatic fdual_t fp_addsub(input logic [31:0] x, input logic [31:0] y, input logic trunc, input logic rnd32);
+    return MAME_RND ? f_addsub(x, y, trunc) : man_addsub(x, y, trunc, rnd32);
+endfunction
+function automatic fres_t fp_mul(input logic [31:0] x, input logic [31:0] y, input logic trunc, input logic rnd32);
+    return MAME_RND ? f_mul(x, y) : man_mul(x, y, trunc, rnd32);
+endfunction
+function automatic fres_t fp_fix(input logic [31:0] x, input logic scaled, input logic [31:0] ry,
+                                 input logic trunc, input logic multi, input logic alusat);
+    return MAME_RND ? f_fix(x, scaled, ry, trunc, multi) : man_fix(x, scaled, ry, trunc, alusat);
+endfunction
+function automatic fres_t fp_float(input logic [31:0] rx, input logic scaled, input logic [31:0] ry,
+                                   input logic multi, input logic trunc, input logic rnd32);
+    return MAME_RND ? f_float(rx, scaled, ry, multi) : man_float(rx, scaled, ry, trunc, rnd32);
+endfunction
+function automatic fres_t fp_comp(input logic [31:0] x, input logic [31:0] y, input logic [31:0] astat);
+    return MAME_RND ? f_comp(x, y, astat) : man_comp(x, y, astat);
+endfunction
+function automatic fres_t fp_minmax(input logic [31:0] x, input logic [31:0] y, input logic max);
+    return MAME_RND ? f_minmax(x, y, max) : man_minmax(x, y, max);
+endfunction
+function automatic fres_t fp_scalb(input logic [31:0] x, input logic [31:0] ry, input logic trunc);
+    return MAME_RND ? f_scalb(x, ry) : man_scalb(x, ry, trunc);
+endfunction
+function automatic fres_t fp_logb(input logic [31:0] x, input logic alusat);
+    return MAME_RND ? f_logb(x) : man_logb(x, alusat);
+endfunction
+function automatic fres_t fp_recips(input logic [31:0] x);
+    return MAME_RND ? f_recips(x) : man_recips(x);
+endfunction
+function automatic fres_t fp_rsqrts(input logic [31:0] x);
+    return MAME_RND ? f_rsqrts(x) : man_rsqrts(x);
 endfunction
 
 `include "sharc_core_ops.svh"

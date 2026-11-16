@@ -1,0 +1,13 @@
+-fno-dfg
+-Irtl/cpu/sharc
+-Irtl/cpu/sharc2
+rtl/cpu/sharc/sharc_fp_pkg.sv
+rtl/cpu/sharc/sharc_core.sv
+rtl/cpu/sharc2/sharc2_pkg.sv
+rtl/cpu/sharc2/sharc_fadd.sv
+rtl/cpu/sharc2/sharc_fmul.sv
+rtl/cpu/sharc2/sharc2_alu.sv
+rtl/board/hornet_dpram.sv
+rtl/cpu/sharc2/sharc2_lutram.sv
+rtl/cpu/sharc2/sharc2_core.sv
+sim/sharclock_tb/tb_sharclock.sv

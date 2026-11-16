@@ -45,6 +45,15 @@ bad; timing `rtl/synth_fp` revision `fp2`, slack per stage from `paths.tcl`):
 
 Stage 2's spare time is where the forwarding mux goes; stage 1 must start from registers.
 
+Both units, `sharc2_alu` and both cores take `MAME_RND` (`MAME_KLUDGES.md`, "SHARC at MAME_RND
+0"). 1, the default, is the table above. At 0, the manual's arithmetic, reading MODE1 TRUNC, RND32
+and ALUSAT: the adder gates its rounding increment and clamps a round-up past 2^128 and is
+otherwise the same circuit; the multiplier flushes its operands, so it has no slow path (`busy`
+stays 0), and flushes a post-rounded underflow; the slow unit's operations are `sharc_fp_pkg`'s
+`man_*`. Benches: `sim/sharcman_tb` (the units and every `man_*` against a manual reference),
+`sim/sharclock_tb` (v1 against v2 on generated programs, either setting). 40-bit results are not
+built at either.
+
 ## Latency: what the game's code needs
 
 `scripts/sharc_pipe_model.py` replays a MAME window's PC stream through an in-order, one-issue

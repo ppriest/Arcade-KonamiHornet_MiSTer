@@ -35,7 +35,8 @@ module sharc2_core #(
     parameter bit DMA_PACK = 1,         // DMA packing (PMODE); 0: none (DTYPE's 48-bit words stay)
     parameter bit SUBSET = 0,           // gradius4's subset: no type 1 (dual access) and the compute
                                         // operations of sharc2_pkg comp_unsup left out; `unsup` flags one
-    parameter bit ONE_FADD = 0          // one float adder: a dual FADD/FSUB takes a clock more in X
+    parameter bit ONE_FADD = 0,         // one float adder: a dual FADD/FSUB takes a clock more in X
+    parameter bit MAME_RND = 0          // float rounding: 1 MAME's, 0 the manual's (docs/MAME_KLUDGES.md)
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -83,7 +84,8 @@ import sharc2_pkg::*;
 localparam logic [31:0] FLGS = 32'h0078_0000;
 localparam logic [31:0] PCFL = 32'h0020_0000, PCEM = 32'h0040_0000, SSOV = 32'h0080_0000,
                         SSEM = 32'h0100_0000, LSOV = 32'h0200_0000, LSEM = 32'h0400_0000;
-localparam logic [31:0] MODE1_ALUSAT = 32'h2000, MODE1_IRPTEN = 32'h1000, MODE1_TRUNCATE = 32'h8000;
+localparam logic [31:0] MODE1_ALUSAT = 32'h2000, MODE1_IRPTEN = 32'h1000, MODE1_TRUNCATE = 32'h8000,
+                        MODE1_RND32 = 32'h1_0000;
 
 // ------------------------------------------------------------------------------------------
 // State
@@ -780,7 +782,7 @@ assign alu_shimm = x_dec.shimm;          // the form (decode); the condition gat
 assign alu_mode1 = (x_hclk || xph == XS_EXEC) ? c.c_mode1 : x_c_mode1;
 assign alu_astat = (x_hclk || xph == XS_EXEC) ? c.c_astat : x_c_astat;
 
-sharc2_alu #(.SUBSET(SUBSET), .ONE_FADD(ONE_FADD)) u_alu (
+sharc2_alu #(.SUBSET(SUBSET), .ONE_FADD(ONE_FADD), .MAME_RND(MAME_RND)) u_alu (
     .clk, .ce,
     .d_go, .d_comp_on(d_dec.comp_on), .d_comp(pm_q[22:0]),
     .d_ax(fwd_e(d_dec.i_ax)), .d_ay(fwd_e(d_dec.i_ay)), .d_mc_wait,
@@ -790,6 +792,7 @@ sharc2_alu #(.SUBSET(SUBSET), .ONE_FADD(ONE_FADD)) u_alu (
     .ax(ax_e), .ay(ay_e), .mx(mx_e), .my(my_e), .xe(e_e),
     .astat_in(alu_astat),
     .trunc((alu_mode1 & MODE1_TRUNCATE) != 0), .alusat((alu_mode1 & MODE1_ALUSAT) != 0),
+    .rnd32((alu_mode1 & MODE1_RND32) != 0),
     .mrf, .mrb,
     .x_busy, .x_needs_astat(x_alu_needs_astat),
     .xw_we, .xw_wr, .xw_r0, .xw_r1, .xw_d0, .xw_d1,

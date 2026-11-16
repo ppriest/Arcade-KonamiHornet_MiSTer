@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Float add / subtract in two stages, bit-exact to sharc_fp_pkg::f_add / f_sub (MAME's host
-// arithmetic with the ALU's input and result flush). Stage 1 registers at `en`; the result
-// and flags are stage 2's, combinational, in the clock after.
+// arithmetic with the ALU's input and result flush), or with MAME_RND 0 to man_add / man_sub
+// (the manual: toward zero under `trunc` with `rnd32`; with `rnd32` clear, to nearest, and a
+// round-up across 2^128 gives NORM.MAX). Stage 1 registers at `en`; the result and flags are
+// stage 2's, combinational, in the clock after.
 //
 // The inputs are flushed, so each operand is zero, normal or infinite. Two paths:
 //   far:  effective add, or subtract with exponent difference >= 2, or subtract with no
@@ -10,14 +12,20 @@
 //         rounding (stage 2). Never denormal.
 //   near: effective subtract with exponent difference <= 1 and cancellation: subtract (stage
 //         1), then a leading-zero shift clamped at the denormal boundary (stage 2). Exact.
+// The rounding mode matters only in the far path: the near path is exact, and alu_fin's flush
+// and NORM.MAX are already the manual's (p. B-24, B-25).
 
-module sharc_fadd (
+module sharc_fadd #(
+    parameter bit MAME_RND = 0          // 0 (default): the manual's rounding (`trunc`, `rnd32`); 1 MAME's
+) (
     input  logic        clk,
     input  logic        en,             // advance the pipeline
     input  logic [31:0] x,
     input  logic [31:0] y,
     input  logic        sub,
-    input  logic        trunc,          // MODE1.TRUNCATE: overflow gives the largest finite
+    input  logic        trunc,          // MODE1.TRUNCATE: overflow gives the largest finite;
+                                        // MAME_RND 0: round toward zero if rnd32 too
+    input  logic        rnd32,          // MODE1.RND32 (MAME_RND 0)
     output logic [31:0] r,
     output logic [31:0] astat,          // AZ AV AN AI AF, to OR in after clearing the ALU group
     output logic [31:0] stky,           // AUS AVS AIS
@@ -90,7 +98,7 @@ always_comb begin
     marker = (ex <= 8'd25) ? (25'h1 << (8'd25 - ex)) : 25'h0;
 end
 
-logic        v_nan, v_inf, v_near, v_trunc, v_sgn, v_nanin, v_infb;
+logic        v_nan, v_inf, v_near, v_trunc, v_rnd32, v_sgn, v_nanin, v_infb;
 logic [31:0] v_infr;
 logic [27:0] v_s;
 logic [24:0] v_n, v_mark;
@@ -104,6 +112,7 @@ always_ff @(posedge clk) if (en) begin
     v_infr <= is_inf(xf) ? xf : yf;
     v_near <= near;
     v_trunc <= trunc;
+    v_rnd32 <= rnd32;
     v_sgn <= bx[31];
     v_s <= s_far;
     v_n <= n_near;
@@ -134,17 +143,18 @@ always_comb begin
         else            raw = {v_sgn, 8'h00, t[23:1]};
     end else begin
         logic [26:0] s;
-        logic [8:0]  e;
+        logic [8:0]  e, ec;
         logic [24:0] m;
         logic        up;
         e = {1'b0, v_e};
         if (v_s[27])       begin s = {v_s[27:2], v_s[1] | v_s[0]}; e = e + 9'd1; end
         else if (!v_s[26]) begin s = {v_s[25:0], 1'b0}; e = e - 9'd1; end
         else                     s = v_s[26:0];
-        up = s[2] && (s[1] || s[0] || s[3]);
+        up = !(!MAME_RND && v_trunc && v_rnd32) && s[2] && (s[1] || s[0] || s[3]);
         m = {1'b0, s[26:3]} + {24'h0, up};
+        ec = e;
         if (m[24]) begin m = m >> 1; e = e + 9'd1; end
-        if (e >= 9'd255)  raw = {v_sgn, INF[30:0]};
+        if (e >= 9'd255)  raw = (!MAME_RND && !v_rnd32 && ec < 9'd255) ? {v_sgn, MAXF[30:0]} : {v_sgn, INF[30:0]};
         else if (!m[23])  raw = {v_sgn, 8'h00, m[22:0]};
         else              raw = {v_sgn, e[7:0], m[22:0]};
     end

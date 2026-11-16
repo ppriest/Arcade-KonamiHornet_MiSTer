@@ -481,10 +481,12 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
     logic [7:0] op;
     logic [1:0] cu;
     logic [3:0] rn, rx, ry;
-    logic trunc;
+    logic trunc, rnd32, alusat;
     op = opc[19:12]; cu = opc[21:20];
     rn = opc[11:8]; rx = opc[7:4]; ry = opc[3:0];
     trunc = (s.mode1 & MODE1_TRUNCATE) != 0;
+    rnd32 = (s.mode1 & MODE1_RND32) != 0;
+    alusat = (s.mode1 & MODE1_ALUSAT) != 0;
     if (opc[22]) begin
         // multifunction
         logic [3:0] fm, fa;
@@ -543,16 +545,16 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
             fres_t mr, ar;
             s.astat = s.astat & ~(MN | MV | MU | MI);
             s.astat = s.astat & ~(AZ | AN | AV | AC | AS | AI);
-            mr = f_mul(s.r[fxm], s.r[fym]);
+            mr = fp_mul(s.r[fxm], s.r[fym], trunc, rnd32);
             case (mop)
-            6'h18: ar = f_add(s.r[fxa], s.r[fya], trunc);
-            6'h19: ar = f_sub(s.r[fxa], s.r[fya], trunc);
-            6'h1a: ar = f_float(s.r[fxa], 1'b1, s.r[fya], 1'b1);
-            6'h1b: ar = f_fix(s.r[fxa], 1'b1, s.r[fya], trunc, 1'b1);
-            6'h1c: ar = f_avg(s.r[fxa], s.r[fya], trunc);
+            6'h18: ar = fp_add(s.r[fxa], s.r[fya], trunc, rnd32);
+            6'h19: ar = fp_sub(s.r[fxa], s.r[fya], trunc, rnd32);
+            6'h1a: ar = fp_float(s.r[fxa], 1'b1, s.r[fya], 1'b1, trunc, rnd32);
+            6'h1b: ar = fp_fix(s.r[fxa], 1'b1, s.r[fya], trunc, 1'b1, alusat);
+            6'h1c: ar = fp_avg(s.r[fxa], s.r[fya], trunc, rnd32);
             6'h1d: ar = f_abs(s.r[fxa]);
-            6'h1e: ar = f_minmax(s.r[fxa], s.r[fya], 1'b1);
-            default: ar = f_minmax(s.r[fxa], s.r[fya], 1'b0);
+            6'h1e: ar = fp_minmax(s.r[fxa], s.r[fya], 1'b1);
+            default: ar = fp_minmax(s.r[fxa], s.r[fya], 1'b0);
             endcase
             s.astat = s.astat | mr.astat | ar.astat;
             s.stky = s.stky | mr.stky | ar.stky;
@@ -565,8 +567,8 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
             fs = opc[19:16];
             s.astat = s.astat & ~(MN | MV | MU | MI);
             s.astat = s.astat & ~(AZ | AN | AV | AC | AS | AI);
-            mr = f_mul(s.r[fxm], s.r[fym]);
-            d = f_addsub(s.r[fxa], s.r[fya], trunc);
+            mr = fp_mul(s.r[fxm], s.r[fym], trunc, rnd32);
+            d = fp_addsub(s.r[fxa], s.r[fya], trunc, rnd32);
             s.astat = s.astat | mr.astat | d.astat;
             s.stky = s.stky | mr.stky | d.stky;
             s.r[fm] = mr.r; s.r[fa] = d.add; s.r[fs] = d.sub;
@@ -602,7 +604,7 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
                 logic [3:0] rs_, ra_;
                 rs_ = opc[15:12]; ra_ = opc[11:8];
                 s.astat = s.astat & ~(AZ | AN | AV | AC | AS | AI);
-                d = f_addsub(s.r[rx], s.r[ry], trunc);
+                d = fp_addsub(s.r[rx], s.r[ry], trunc, rnd32);
                 s.astat |= d.astat; s.stky |= d.stky;
                 s.r[ra_] = d.add; s.r[rs_] = d.sub;
             end else begin
@@ -611,33 +613,33 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
                 s.astat = s.astat & ~(AZ | AN | AV | AC | AS | AI);
                 wr = 1'b1;
                 case (op)
-                8'h81: o = f_add(s.r[rx], s.r[ry], trunc);
-                8'h82: o = f_sub(s.r[rx], s.r[ry], trunc);
-                8'h89: o = f_avg(s.r[rx], s.r[ry], trunc);
-                8'h8a: begin o = f_comp(s.r[rx], s.r[ry], s.astat); wr = 1'b0;
+                8'h81: o = fp_add(s.r[rx], s.r[ry], trunc, rnd32);
+                8'h82: o = fp_sub(s.r[rx], s.r[ry], trunc, rnd32);
+                8'h89: o = fp_avg(s.r[rx], s.r[ry], trunc, rnd32);
+                8'h8a: begin o = fp_comp(s.r[rx], s.r[ry], s.astat); wr = 1'b0;
                              s.astat = (s.astat & 32'h00FF_FFFF) | (o.r & 32'hFF00_0000); end
                 // ABS(Fx + Fy), ABS(Fx - Fy) (compute.hxx:806-884): the flags of the magnitude,
                 // so never AN; a NaN result stays the canonical NaN
-                8'h91: begin o = f_add(s.r[rx], s.r[ry], trunc);
+                8'h91: begin o = fp_add(s.r[rx], s.r[ry], trunc, rnd32);
                              if ((o.astat & AI) == 0) o.r = o.r & ~SIGN;
                              o.astat = o.astat & ~AN; end
-                8'h92: begin o = f_sub(s.r[rx], s.r[ry], trunc);
+                8'h92: begin o = fp_sub(s.r[rx], s.r[ry], trunc, rnd32);
                              if ((o.astat & AI) == 0) o.r = o.r & ~SIGN;
                              o.astat = o.astat & ~AN; end
                 8'ha1: o = f_pass(s.r[rx]);
                 8'ha2: o = f_neg(s.r[rx]);
                 8'hb0: o = f_abs(s.r[rx]);
-                8'hbd: o = f_scalb(s.r[rx], s.r[ry]);
-                8'hc1: o = f_logb(s.r[rx]);
-                8'hc4: o = f_recips(s.r[rx]);
-                8'hc5: o = f_rsqrts(s.r[rx]);
-                8'hc9: o = f_fix(s.r[rx], 1'b0, 32'h0, trunc, 1'b0);
-                8'hca: o = f_float(s.r[rx], 1'b0, 32'h0, 1'b0);
-                8'hd9: o = f_fix(s.r[rx], 1'b1, s.r[ry], trunc, 1'b0);
-                8'hda: o = f_float(s.r[rx], 1'b1, s.r[ry], 1'b0);
+                8'hbd: o = fp_scalb(s.r[rx], s.r[ry], trunc);
+                8'hc1: o = fp_logb(s.r[rx], alusat);
+                8'hc4: o = fp_recips(s.r[rx]);
+                8'hc5: o = fp_rsqrts(s.r[rx]);
+                8'hc9: o = fp_fix(s.r[rx], 1'b0, 32'h0, trunc, 1'b0, alusat);
+                8'hca: o = fp_float(s.r[rx], 1'b0, 32'h0, 1'b0, trunc, rnd32);
+                8'hd9: o = fp_fix(s.r[rx], 1'b1, s.r[ry], trunc, 1'b0, alusat);
+                8'hda: o = fp_float(s.r[rx], 1'b1, s.r[ry], 1'b0, trunc, rnd32);
                 8'he0: o = f_copysign(s.r[rx], s.r[ry]);
-                8'he1: o = f_minmax(s.r[rx], s.r[ry], 1'b0);
-                8'he2: o = f_minmax(s.r[rx], s.r[ry], 1'b1);
+                8'he1: o = fp_minmax(s.r[rx], s.r[ry], 1'b0);
+                8'he2: o = fp_minmax(s.r[rx], s.r[ry], 1'b1);
                 8'he3: o = f_clip(s.r[rx], s.r[ry]);
                 default: begin o = '0; wr = 1'b0; end
                 endcase
@@ -653,7 +655,7 @@ task automatic compute(inout st_t s, input logic [22:0] opc);
             8'h30: begin
                 fres_t o;
                 s.astat = s.astat & ~(MN | MV | MU | MI);
-                o = f_mul(s.r[rx], s.r[ry]);
+                o = fp_mul(s.r[rx], s.r[ry], trunc, rnd32);
                 s.astat |= o.astat; s.stky |= o.stky; s.r[rn] = o.r;
             end
             8'h40: begin
